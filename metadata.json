@@ -1,0 +1,6 @@
+{
+  "name": "Safal DPP Studio — PYQ & Exam Sheet Generator",
+  "description": "High-precision Daily Practice Problem (DPP) and Answer Key PDF studio for Classes 7–12 across CBSE, JAC, ICSE, Olympiad, JEE Mains, JEE Advanced, and NEET with KaTeX math, organic chemistry structures, and vector scientific diagrams.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

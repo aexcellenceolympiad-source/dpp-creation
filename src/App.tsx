@@ -1,0 +1,563 @@
+import { useEffect, useState } from 'react';
+import { FileText, KeyRound, Printer, ZoomIn, ZoomOut, AlertCircle } from 'lucide-react';
+import { DEFAULT_STYLE_CONFIG, getChaptersForSelection, REFERENCE_BOOKS_BY_PROFILE } from './data/curriculum';
+import { STARTER_DPP } from './data/starterDpp';
+import { DppDocument, DppQuestion, DppStyleConfig, GenerateDppPayload } from './types/dpp';
+import { StudioSidebar, SidebarTab } from './components/StudioSidebar';
+import { DppPaperView } from './components/DppPaperView';
+
+const STYLE_STORAGE_KEY = 'safal_dpp_style_v1';
+const ACTIVE_DPP_STORAGE_KEY = 'safal_active_dpp_v1';
+const HISTORY_DPP_STORAGE_KEY = 'safal_history_dpp_v1';
+
+interface SavedDppEntry {
+  id: string;
+  label: string;
+  doc: DppDocument;
+}
+
+export default function App() {
+  const [sidebarTab, setSidebarTab] = useState<SidebarTab>('curriculum');
+  const [docMode, setDocMode] = useState<'questions' | 'answers'>('questions');
+  const [zoom, setZoom] = useState<number>(90);
+
+  const [styleConfig, setStyleConfig] = useState<DppStyleConfig>(() => {
+    try {
+      const saved = localStorage.getItem(STYLE_STORAGE_KEY);
+      if (saved) {
+        return { ...DEFAULT_STYLE_CONFIG, ...JSON.parse(saved) };
+      }
+    } catch {
+      // Ignore storage error
+    }
+    return DEFAULT_STYLE_CONFIG;
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STYLE_STORAGE_KEY, JSON.stringify(styleConfig));
+    } catch {
+      // Ignore storage error
+    }
+  }, [styleConfig]);
+
+  const initialChapters = getChaptersForSelection('12', 'Physics');
+
+  const [form, setForm] = useState<GenerateDppPayload>({
+    classLevel: '12',
+    juniorBoard: 'CBSE',
+    juniorTier: 'School Level',
+    seniorExam: 'JEE Advanced',
+    subject: 'Physics',
+    chapter: initialChapters[1]?.chapter || 'Laws of Motion & Friction',
+    topic: initialChapters[1]?.topics[0] || 'Constraint Relations & Wedge-Pulley Systems',
+    questionCount: 10,
+    questionTypes: ['mcq', 'match_following', 'assertion_reason', 'subjective'],
+    diagramPercentage: 50,
+    medium: 'English',
+    referenceBooks: REFERENCE_BOOKS_BY_PROFILE['JEE Advanced'].slice(0, 4),
+    marksPerQuestion: 4,
+    negativeMarks: 1,
+    customInstructions: '',
+  });
+
+  const [dpp, setDpp] = useState<DppDocument>(() => {
+    try {
+      const saved = localStorage.getItem(ACTIVE_DPP_STORAGE_KEY);
+      if (saved) return JSON.parse(saved) as DppDocument;
+    } catch {
+      // Ignore storage error
+    }
+    return STARTER_DPP;
+  });
+
+  const [history, setHistory] = useState<SavedDppEntry[]>(() => {
+    try {
+      const saved = localStorage.getItem(HISTORY_DPP_STORAGE_KEY);
+      if (saved) return JSON.parse(saved) as SavedDppEntry[];
+    } catch {
+      // Ignore storage error
+    }
+    return [];
+  });
+
+  useEffect(() => {
+    try {
+      if (!dpp.isStarterPreview) {
+        localStorage.setItem(ACTIVE_DPP_STORAGE_KEY, JSON.stringify(dpp));
+      }
+    } catch {
+      // Ignore storage error
+    }
+  }, [dpp]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(HISTORY_DPP_STORAGE_KEY, JSON.stringify(history));
+    } catch {
+      // Ignore storage error
+    }
+  }, [history]);
+
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [hasPartialBatch, setHasPartialBatch] = useState(false);
+  const [progressMsg, setProgressMsg] = useState<string>('');
+  const [regeneratingId, setRegeneratingId] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const postJsonWithRetry = async (url: string, payload: unknown, retries = 2) => {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      const text = await res.text();
+      let data: Record<string, unknown> = {};
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        data = {};
+      }
+
+      if (res.ok) {
+        return data;
+      }
+
+      if ((res.status === 502 || res.status === 503 || res.status === 504) && attempt < retries) {
+        await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+        continue;
+      }
+
+      const errText =
+        typeof data.error === 'string' && data.error
+          ? data.error
+          : `Server returned status ${res.status}. Please try again in a few seconds.`;
+      throw new Error(errText);
+    }
+    throw new Error('Request failed after retries.');
+  };
+
+  const handleGenerate = async () => {
+    setErrorMsg(null);
+    setIsGenerating(true);
+    setHasPartialBatch(false);
+    setProgressMsg('Connecting to PYQ paper-setter...');
+
+    try {
+      let generated: DppDocument | null = null;
+      for (let attempt = 0; attempt <= 2; attempt++) {
+        const res = await fetch('/api/dpp/generate', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/x-ndjson',
+          },
+          body: JSON.stringify(form),
+        });
+
+        if (!res.ok) {
+          if ((res.status === 502 || res.status === 503 || res.status === 504) && attempt < 2) {
+            setProgressMsg('Server busy, retrying automatically...');
+            await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+            continue;
+          }
+          const txt = await res.text();
+          let errJson: { error?: string } = {};
+          try {
+            errJson = JSON.parse(txt);
+          } catch {
+            // ignore
+          }
+          throw new Error(errJson.error || `Server error (${res.status}). Please retry.`);
+        }
+
+        const contentType = res.headers.get('content-type') || '';
+        if (!contentType.includes('ndjson') || !res.body) {
+          const json = await res.json();
+          generated = json as DppDocument;
+          break;
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() ?? '';
+
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            const evt = JSON.parse(line) as {
+              type: 'progress' | 'ping' | 'batch' | 'result' | 'error';
+              message?: string;
+              data?: DppDocument;
+              error?: string;
+            };
+            if (evt.type === 'progress' && evt.message) {
+              setProgressMsg(evt.message);
+            } else if (evt.type === 'batch' && evt.data) {
+              setDpp(evt.data);
+              setHasPartialBatch(true);
+              setDocMode('questions');
+            } else if (evt.type === 'result' && evt.data) {
+              generated = evt.data;
+            } else if (evt.type === 'error') {
+              throw new Error(evt.error || 'Failed to generate DPP.');
+            }
+          }
+        }
+        break;
+      }
+
+      if (!generated) {
+        throw new Error('No DPP payload received from server.');
+      }
+      setDpp(generated);
+      setHistory((prev) => {
+        const entry: SavedDppEntry = {
+          id: `sheet-${Date.now()}`,
+          label: `Class ${generated.metadata.classLevel} ${generated.metadata.subject} · ${generated.metadata.topic} (${generated.questions.length} Qs)`,
+          doc: generated,
+        };
+        return [entry, ...prev].slice(0, 8);
+      });
+      setDocMode('questions');
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Unable to generate DPP.');
+    } finally {
+      setIsGenerating(false);
+      setHasPartialBatch(false);
+      setProgressMsg('');
+    }
+  };
+
+  const handleRegenerateQuestion = async (q: DppQuestion, forceDiagram?: boolean) => {
+    setErrorMsg(null);
+    setRegeneratingId(q.id);
+    try {
+      const data = (await postJsonWithRetry('/api/dpp/regenerate-question', {
+        metadata: dpp.metadata,
+        existingQuestion: q,
+        forceDiagram,
+      })) as unknown as DppQuestion;
+      setDpp((prev) => ({
+        ...prev,
+        questions: prev.questions.map((item) => (item.id === q.id ? data : item)),
+      }));
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Unable to regenerate question.');
+    } finally {
+      setRegeneratingId(null);
+    }
+  };
+
+  const handleDeleteQuestion = (id: string) => {
+    setDpp((prev) => {
+      const remaining = prev.questions
+        .filter((q) => q.id !== id)
+        .map((q, idx) => ({ ...q, number: idx + 1 }));
+      return { ...prev, questions: remaining };
+    });
+  };
+
+  const handleUpdateQuestion = (updated: DppQuestion) => {
+    setDpp((prev) => ({
+      ...prev,
+      questions: prev.questions.map((q) => (q.id === updated.id ? updated : q)),
+    }));
+  };
+
+  const handleExportPdf = (targetMode: 'questions' | 'answers') => {
+    setDocMode(targetMode);
+    const prevTitle = document.title;
+    const suffix = targetMode === 'questions' ? 'Question-Paper' : 'Answer-Key-Solutions';
+    document.title = `${styleConfig.brandName.replace(/\s+/g, '-')}-${dpp.metadata.subject}-${suffix}`;
+
+    // Wait one frame for mode switch if needed, then open print-to-PDF dialog
+    requestAnimationFrame(() => {
+      setTimeout(() => {
+        window.print();
+        document.title = prevTitle;
+      }, 120);
+    });
+  };
+
+  return (
+    <div className="min-h-screen flex flex-col bg-slate-100 text-slate-900">
+      {/* Dynamic @page size and full-bleed background injection for Portrait vs Landscape PDF export */}
+      <style>{`@media print { @page { size: A4 ${styleConfig.orientation}; margin: 0; } html, body { background-color: ${styleConfig.pageColor} !important; } }`}</style>
+
+      {/* Top Bar Contract: 3 zones separated by gap-8 */}
+      <header className="no-print sticky top-0 z-30 h-[57px] bg-white border-b border-slate-200 px-6 flex items-center justify-between gap-8">
+        {/* Zone 1: Single-line Brand Wordmark */}
+        <div className="text-lg font-bold tracking-tight text-slate-900 whitespace-nowrap shrink-0">
+          Safal DPP Studio
+        </div>
+
+        {/* Zone 2: Clean single-line Navigation Links */}
+        <nav className="hidden md:flex items-center gap-6 text-xs font-semibold text-slate-600">
+          <button
+            type="button"
+            onClick={() => setSidebarTab('curriculum')}
+            className={`py-1 border-b-2 transition-colors whitespace-nowrap shrink-0 ${
+              sidebarTab === 'curriculum'
+                ? 'border-blue-700 text-slate-900'
+                : 'border-transparent hover:text-slate-900'
+            }`}
+          >
+            01. Curriculum
+          </button>
+          <button
+            type="button"
+            onClick={() => setSidebarTab('branding')}
+            className={`py-1 border-b-2 transition-colors whitespace-nowrap shrink-0 ${
+              sidebarTab === 'branding'
+                ? 'border-blue-700 text-slate-900'
+                : 'border-transparent hover:text-slate-900'
+            }`}
+          >
+            02. Page & Brand
+          </button>
+          <button
+            type="button"
+            onClick={() => setSidebarTab('typography')}
+            className={`py-1 border-b-2 transition-colors whitespace-nowrap shrink-0 ${
+              sidebarTab === 'typography'
+                ? 'border-blue-700 text-slate-900'
+                : 'border-transparent hover:text-slate-900'
+            }`}
+          >
+            03. Style & Figures
+          </button>
+          <button
+            type="button"
+            onClick={() => setDocMode(docMode === 'questions' ? 'answers' : 'questions')}
+            className={`py-1 border-b-2 transition-colors whitespace-nowrap shrink-0 ${
+              docMode === 'answers'
+                ? 'border-blue-700 text-slate-900'
+                : 'border-transparent hover:text-slate-900'
+            }`}
+          >
+            04. {docMode === 'answers' ? 'Viewing Answer Key' : 'Answer Key PDF'}
+          </button>
+        </nav>
+
+        {/* Zone 3: Single Primary Action */}
+        <div className="shrink-0">
+          <button
+            type="button"
+            onClick={() => handleExportPdf(docMode)}
+            className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <Printer className="w-3.5 h-3.5" />
+            <span>Export {docMode === 'questions' ? 'Question PDF' : 'Answer PDF'}</span>
+          </button>
+        </div>
+      </header>
+
+      {/* Main Split Workspace */}
+      <div className="flex-1 flex flex-col lg:flex-row">
+        <StudioSidebar
+          activeTab={sidebarTab}
+          onTabChange={setSidebarTab}
+          form={form}
+          onFormChange={setForm}
+          styleConfig={styleConfig}
+          onStyleChange={setStyleConfig}
+          onResetStyles={() => setStyleConfig(DEFAULT_STYLE_CONFIG)}
+          onGenerate={handleGenerate}
+          isGenerating={isGenerating}
+        />
+
+        {/* Right Live A4 Preview & Separate PDF Workspace */}
+        <main className="flex-1 flex flex-col min-w-0 lg:h-[calc(100vh-57px)] overflow-hidden">
+          {/* Workspace Toolbar */}
+          <div className="no-print bg-white border-b border-slate-200 px-4 py-2.5 flex flex-wrap items-center justify-between gap-3">
+            {/* Separate PDF Switcher: Question Paper vs Answer Key PDF */}
+            <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg">
+              <button
+                type="button"
+                onClick={() => setDocMode('questions')}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
+                  docMode === 'questions'
+                    ? 'bg-white text-slate-900 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <FileText className="w-3.5 h-3.5" />
+                <span>Question Paper PDF ({dpp.questions.length})</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setDocMode('answers')}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
+                  docMode === 'answers'
+                    ? 'bg-white text-slate-900 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <KeyRound className="w-3.5 h-3.5" />
+                <span>Answer Key & Solutions PDF</span>
+              </button>
+            </div>
+
+            {/* Metadata + Zoom + Separate PDF Print Buttons */}
+            <div className="flex flex-wrap items-center gap-3">
+              {history.length > 0 && (
+                <select
+                  value=""
+                  onChange={(e) => {
+                    const found = history.find((h) => h.id === e.target.value);
+                    if (found) {
+                      setDpp(found.doc);
+                      setDocMode('questions');
+                    }
+                  }}
+                  aria-label="Load recent DPP sheet"
+                  className="max-w-[200px] px-2 py-1 text-xs bg-slate-50 border border-slate-200 rounded-md text-slate-700 truncate"
+                >
+                  <option value="" disabled>
+                    Recent Sheets ({history.length})
+                  </option>
+                  {history.map((h) => (
+                    <option key={h.id} value={h.id}>
+                      {h.label}
+                    </option>
+                  ))}
+                </select>
+              )}
+
+              <div className="hidden xl:flex items-center gap-1.5 text-xs text-slate-500 tabular-nums">
+                <span>{styleConfig.orientation === 'portrait' ? 'A4 Portrait' : 'A4 Landscape'}</span>
+                <span aria-hidden="true">·</span>
+                <span>{styleConfig.columns === 1 ? '1 Col' : '2 Cols'}</span>
+                {dpp.isStarterPreview && (
+                  <>
+                    <span aria-hidden="true">·</span>
+                    <span className="text-blue-700 font-medium">Live Layout Preview</span>
+                  </>
+                )}
+              </div>
+
+              <div className="flex items-center gap-1 border border-slate-200 rounded-md px-1.5 py-1 bg-slate-50">
+                <button
+                  type="button"
+                  onClick={() => setZoom((z) => Math.max(60, z - 10))}
+                  className="p-0.5 text-slate-600 hover:text-slate-900"
+                  title="Zoom out"
+                >
+                  <ZoomOut className="w-3.5 h-3.5" />
+                </button>
+                <span className="text-[11px] font-mono tabular-nums w-9 text-center text-slate-700">
+                  {zoom}%
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setZoom((z) => Math.min(130, z + 10))}
+                  className="p-0.5 text-slate-600 hover:text-slate-900"
+                  title="Zoom in"
+                >
+                  <ZoomIn className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => handleExportPdf('questions')}
+                  className="px-2.5 py-1.5 text-xs font-semibold border border-slate-300 bg-white hover:bg-slate-50 text-slate-800 rounded-md transition-colors whitespace-nowrap"
+                >
+                  Save Questions PDF
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleExportPdf('answers')}
+                  className="px-2.5 py-1.5 text-xs font-semibold border border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-800 rounded-md transition-colors whitespace-nowrap"
+                >
+                  Save Answer PDF
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Error Banner */}
+          {errorMsg && (
+            <div className="no-print mx-4 mt-3 p-3 bg-red-50 border border-red-200 rounded-lg flex items-center gap-3 text-xs text-red-800">
+              <AlertCircle className="w-4 h-4 shrink-0 text-red-600" />
+              <div className="flex-1 min-w-0">
+                <span className="font-semibold">Generation Error: </span>
+                <span>{errorMsg}</span>
+              </div>
+              <button
+                type="button"
+                onClick={handleGenerate}
+                className="px-2.5 py-1 bg-red-700 text-white font-semibold rounded hover:bg-red-800 shrink-0"
+              >
+                Retry
+              </button>
+              <button
+                type="button"
+                onClick={() => setErrorMsg(null)}
+                className="text-red-700 hover:underline font-medium shrink-0"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          {/* Live progressive generation bar when first batch is already on screen */}
+          {isGenerating && hasPartialBatch && (
+            <div className="no-print mx-4 mt-3 px-4 py-2.5 bg-blue-50 border border-blue-200 rounded-lg flex items-center justify-between gap-3 text-xs text-blue-900">
+              <span className="font-medium">
+                {progressMsg || `Adding remaining questions (${dpp.questions.length}/${form.questionCount} ready)...`}
+              </span>
+              <span className="font-mono tabular-nums font-semibold">
+                {dpp.questions.length}/{form.questionCount}
+              </span>
+            </div>
+          )}
+
+          {/* Generating Overlay (shown only before batch 1 arrives) */}
+          {isGenerating && !hasPartialBatch ? (
+            <div className="no-print flex-1 flex flex-col items-center justify-center p-8 text-center">
+              <div className="w-full max-w-2xl bg-white border border-slate-200 rounded-xl p-8 space-y-4">
+                <div className="text-sm font-semibold text-slate-900">
+                  Crafting {form.questionCount} PYQ-calibrated {form.subject} questions for Class{' '}
+                  {form.classLevel} ({parseInt(form.classLevel, 10) <= 10 ? `${form.juniorBoard} · ${form.juniorTier}` : form.seniorExam})...
+                </div>
+                <p className="text-xs text-slate-500">
+                  {progressMsg ||
+                    `Typesetting LaTeX equations, rendering vector diagrams (${form.diagramPercentage}% target), and compiling separate Answer Key & Solutions.`}
+                </p>
+                <div className="space-y-3 pt-2">
+                  <div className="h-4 bg-slate-100 rounded animate-pulse w-3/4 mx-auto" />
+                  <div className="h-24 bg-slate-100 rounded animate-pulse" />
+                  <div className="h-24 bg-slate-100 rounded animate-pulse" />
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="flex-1 overflow-auto bg-slate-200/70">
+              <DppPaperView
+                dpp={dpp}
+                styleConfig={styleConfig}
+                mode={docMode}
+                zoom={zoom}
+                regeneratingId={regeneratingId}
+                onRegenerateQuestion={handleRegenerateQuestion}
+                onDeleteQuestion={handleDeleteQuestion}
+                onUpdateQuestion={handleUpdateQuestion}
+              />
+            </div>
+          )}
+        </main>
+      </div>
+    </div>
+  );
+}

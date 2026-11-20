@@ -1,0 +1,134 @@
+@import "tailwindcss";
+@import "katex/dist/katex.min.css";
+
+@layer base {
+  body {
+    font-family: 'Plus Jakarta Sans', 'Noto Sans Devanagari', system-ui, -apple-system, sans-serif;
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Custom scientific SVG dynamic stroke & color inheritance */
+.scientific-figure-svg svg {
+  width: 100%;
+  height: auto;
+  max-height: 220px;
+  display: block;
+  margin: 0 auto;
+  color: var(--fig-color, #0F172A);
+}
+
+.scientific-figure-svg svg line,
+.scientific-figure-svg svg path,
+.scientific-figure-svg svg circle,
+.scientific-figure-svg svg rect,
+.scientific-figure-svg svg polygon,
+.scientific-figure-svg svg polyline,
+.scientific-figure-svg svg ellipse {
+  stroke-width: var(--fig-stroke, 1.8px);
+}
+
+/* OpenChemLib SVG dynamic stroke thickness & ink styling */
+.chemistry-svg-wrap svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+.chemistry-svg-wrap svg line,
+.chemistry-svg-wrap svg path,
+.chemistry-svg-wrap svg polygon {
+  stroke-width: var(--fig-stroke, 1.8px);
+}
+
+/* KaTeX refinement inside colored question/option blocks */
+.katex {
+  font-size: 1.04em;
+  color: inherit;
+}
+
+.katex-display {
+  margin: 0.45em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+/* Clean print-to-PDF isolation with 0mm edge-to-edge border */
+@media print {
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  html,
+  body {
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  .print-container {
+    margin: 0 !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+    width: 100% !important;
+    max-width: none !important;
+    overflow: visible !important;
+  }
+
+  .print-a4-sheet {
+    box-shadow: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 100% !important;
+    min-height: auto !important;
+    transform: none !important;
+  }
+
+  .print-page-border-overlay {
+    display: block !important;
+    position: fixed !important;
+    inset: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    box-sizing: border-box !important;
+    pointer-events: none !important;
+    z-index: 9999 !important;
+  }
+
+  .print-screen-frame {
+    border: none !important;
+    outline: none !important;
+    padding: 0 !important;
+  }
+
+  .print-spacer-table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  .print-spacer-table tr,
+  .print-spacer-table td {
+    break-inside: auto !important;
+    page-break-inside: auto !important;
+  }
+
+  .print-spacer-head {
+    display: table-header-group;
+  }
+
+  .print-spacer-foot {
+    display: table-footer-group;
+  }
+
+  .question-block-avoid-break {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+}
