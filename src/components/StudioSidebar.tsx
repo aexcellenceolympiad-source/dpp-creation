@@ -1,15 +1,15 @@
 import React from 'react';
-import { RotateCcw, Sparkles } from 'lucide-react';
+import { RotateCcw, Sparkles, X } from 'lucide-react';
 import {
   CLASS_LEVELS,
   JUNIOR_BOARDS,
   JUNIOR_SUBJECTS,
   JUNIOR_TIERS,
   QUESTION_TYPE_OPTIONS,
-  REFERENCE_BOOKS_BY_PROFILE,
   SENIOR_EXAMS,
   SENIOR_SUBJECTS,
   getChaptersForSelection,
+  getRecommendedBooks,
 } from '../data/curriculum';
 import {
   BorderStyleType,
@@ -36,6 +36,7 @@ interface StudioSidebarProps {
   onStyleChange: (updater: (prev: DppStyleConfig) => DppStyleConfig) => void;
   onResetStyles: () => void;
   onGenerate: () => void;
+  onCancelGenerate?: () => void;
   isGenerating: boolean;
 }
 
@@ -46,10 +47,33 @@ interface TextStyleControlProps {
   onChange: (next: TextStyleConfig) => void;
 }
 
+const AI_QUICK_PROMPTS: { label: string; text: string }[] = [
+  {
+    label: 'PYQ Heavy',
+    text: 'Model every question strictly on last 5 years PYQs with realistic numerical & conceptual traps.',
+  },
+  {
+    label: 'Hard Multi-Concept',
+    text: 'Increase difficulty to rank-decider multi-concept synthesis; avoid trivial direct formula questions.',
+  },
+  {
+    label: 'NCERT Line-by-Line',
+    text: 'Base every statement and conceptual trap strictly on NCERT textbook lines, tables, and Exemplar.',
+  },
+  {
+    label: 'Diagram Focused',
+    text: 'Include crisp geometry/FBD/graph/benzene reaction diagrams with clear labels and units.',
+  },
+  {
+    label: 'Board Proofs',
+    text: 'Include complete step-by-step marking-scheme derivations and clean formula substitutions.',
+  },
+];
+
 const TextStyleRow: React.FC<TextStyleControlProps> = ({
   label,
   value,
-  showUnderline = false,
+  showUnderline = true,
   onChange,
 }) => {
   return (
@@ -139,6 +163,7 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
   onStyleChange,
   onResetStyles,
   onGenerate,
+  onCancelGenerate,
   isGenerating,
 }) => {
   const isJunior = parseInt(form.classLevel, 10) <= 10;
@@ -148,7 +173,7 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
   const topics = matchedChapter ? matchedChapter.topics : [];
 
   const profileKey = isJunior ? form.juniorTier : form.seniorExam;
-  const recommendedBooks = REFERENCE_BOOKS_BY_PROFILE[profileKey] || [];
+  const recommendedBooks = getRecommendedBooks(profileKey, form.subject);
   const estimatedDiagramCount = Math.round((form.questionCount * form.diagramPercentage) / 100);
 
   const handleClassChange = (cls: ClassLevel) => {
@@ -166,7 +191,7 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
       subject: nextSubject,
       chapter: nextChapter,
       topic: nextTopic,
-      referenceBooks: (REFERENCE_BOOKS_BY_PROFILE[nextProfile] || []).slice(0, 3),
+      referenceBooks: getRecommendedBooks(nextProfile, nextSubject).slice(0, 4),
     }));
   };
 
@@ -179,6 +204,7 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
       subject,
       chapter: nextChapter,
       topic: nextTopic,
+      referenceBooks: getRecommendedBooks(profileKey, subject).slice(0, 4),
     }));
   };
 
@@ -320,7 +346,7 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
                       onFormChange((prev) => ({
                         ...prev,
                         juniorTier: nextTier,
-                        referenceBooks: (REFERENCE_BOOKS_BY_PROFILE[nextTier] || []).slice(0, 3),
+                        referenceBooks: getRecommendedBooks(nextTier, form.subject).slice(0, 4),
                       }));
                     }}
                     className="w-full px-2.5 py-2 text-xs font-medium bg-white border border-slate-300 rounded-md text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
@@ -345,7 +371,7 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
                     onFormChange((prev) => ({
                       ...prev,
                       seniorExam: nextExam,
-                      referenceBooks: (REFERENCE_BOOKS_BY_PROFILE[nextExam] || []).slice(0, 3),
+                      referenceBooks: getRecommendedBooks(nextExam, form.subject).slice(0, 4),
                     }));
                   }}
                   className="w-full px-2.5 py-2 text-xs font-medium bg-white border border-slate-300 rounded-md text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
@@ -453,6 +479,80 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
                   placeholder="Enter exact topic / micro-concept"
                   className="w-full px-2.5 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-md text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-600"
                 />
+              </div>
+            </div>
+
+            {/* Dedicated Prominent AI Instruction Box + Engine Mode */}
+            <div className="p-3 bg-blue-50/70 border border-blue-200 rounded-lg space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <label className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-blue-700" />
+                  <span>Direct AI Paper-Setter Instructions</span>
+                </label>
+                {form.customInstructions?.trim() && (
+                  <button
+                    type="button"
+                    onClick={() => onFormChange((prev) => ({ ...prev, customInstructions: '' }))}
+                    className="text-[10.5px] font-medium text-slate-500 hover:text-slate-800"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+              <textarea
+                rows={3}
+                value={form.customInstructions || ''}
+                onChange={(e) =>
+                  onFormChange((prev) => ({ ...prev, customInstructions: e.target.value }))
+                }
+                placeholder="Type any exact instruction for AI: e.g., 'Make 3 Black Book level questions on definite integrals', 'Include benzene Friedel-Crafts reactions', 'Use only integer numerical answers'..."
+                className="w-full px-2.5 py-2 text-xs bg-white border border-blue-200 rounded-md text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
+              />
+              <div className="flex flex-wrap gap-1">
+                {AI_QUICK_PROMPTS.map((chip) => (
+                  <button
+                    key={chip.label}
+                    type="button"
+                    onClick={() =>
+                      onFormChange((prev) => ({
+                        ...prev,
+                        customInstructions: prev.customInstructions?.trim()
+                          ? `${prev.customInstructions.trim()} ${chip.text}`
+                          : chip.text,
+                      }))
+                    }
+                    className="px-2 py-0.5 text-[10.5px] font-semibold bg-white hover:bg-blue-100 text-blue-800 border border-blue-200 rounded transition-colors"
+                  >
+                    + {chip.label}
+                  </button>
+                ))}
+              </div>
+              <div className="pt-1 border-t border-blue-200/70 flex items-center justify-between gap-2">
+                <span className="text-[11px] font-semibold text-slate-700">AI Brain Mode</span>
+                <div className="grid grid-cols-2 gap-1 p-0.5 bg-white border border-blue-200 rounded-md">
+                  <button
+                    type="button"
+                    onClick={() => onFormChange((prev) => ({ ...prev, aiMode: 'fast' }))}
+                    className={`px-2 py-1 text-[10.5px] font-semibold rounded transition-colors ${
+                      form.aiMode !== 'deep'
+                        ? 'bg-blue-700 text-white'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    Fast (Free-Tier)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onFormChange((prev) => ({ ...prev, aiMode: 'deep' }))}
+                    className={`px-2 py-1 text-[10.5px] font-semibold rounded transition-colors ${
+                      form.aiMode === 'deep'
+                        ? 'bg-slate-900 text-white'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    Deep Reasoning
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -587,9 +687,14 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
 
             {/* Ideal Reference Books & PYQ Sources */}
             <div className="pt-1 border-t border-slate-100">
-              <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                Reference Book & PYQ Calibration
-              </label>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="block text-xs font-semibold text-slate-700">
+                  Reference Books ({form.subject})
+                </label>
+                <span className="text-[10.5px] text-slate-500">
+                  {form.referenceBooks.length} selected
+                </span>
+              </div>
               <div className="space-y-1">
                 {recommendedBooks.map((book) => {
                   const checked = form.referenceBooks.includes(book);
@@ -609,22 +714,6 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
                   );
                 })}
               </div>
-            </div>
-
-            {/* Optional Custom Teacher Notes */}
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Extra Paper-Setter Instructions (Optional)
-              </label>
-              <textarea
-                rows={2}
-                value={form.customInstructions || ''}
-                onChange={(e) =>
-                  onFormChange((prev) => ({ ...prev, customInstructions: e.target.value }))
-                }
-                placeholder="e.g., Focus on benzene nitration ortho/para directing effects, include 2 numericals..."
-                className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-300 rounded-md text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-600"
-              />
             </div>
           </>
         )}
@@ -899,6 +988,66 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
                 className="w-full px-2 py-1.5 text-xs border border-slate-200 rounded bg-white text-slate-800"
               />
             </div>
+
+            {/* Watermark & Question Spacing Controls */}
+            <div className="pt-2 border-t border-slate-200 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-slate-700">Diagonal Page Watermark</span>
+                <label className="inline-flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={styleConfig.showWatermark}
+                    onChange={(e) =>
+                      onStyleChange((prev) => ({ ...prev, showWatermark: e.target.checked }))
+                    }
+                    className="rounded border-slate-300 text-blue-700"
+                  />
+                  <span>Enable</span>
+                </label>
+              </div>
+              {styleConfig.showWatermark && (
+                <div>
+                  <div className="flex justify-between text-[11px] text-slate-500 mb-0.5">
+                    <span>Watermark Opacity</span>
+                    <span className="font-mono tabular-nums">{styleConfig.watermarkOpacity}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={4}
+                    max={20}
+                    step={1}
+                    value={styleConfig.watermarkOpacity}
+                    onChange={(e) =>
+                      onStyleChange((prev) => ({
+                        ...prev,
+                        watermarkOpacity: Number(e.target.value),
+                      }))
+                    }
+                    className="w-full accent-blue-700 h-1.5"
+                  />
+                </div>
+              )}
+              <div>
+                <div className="flex justify-between text-[11px] text-slate-500 mb-0.5">
+                  <span>Question Spacing</span>
+                  <span className="font-mono tabular-nums">{styleConfig.questionSpacing}px</span>
+                </div>
+                <input
+                  type="range"
+                  min={8}
+                  max={28}
+                  step={2}
+                  value={styleConfig.questionSpacing}
+                  onChange={(e) =>
+                    onStyleChange((prev) => ({
+                      ...prev,
+                      questionSpacing: Number(e.target.value),
+                    }))
+                  }
+                  className="w-full accent-blue-700 h-1.5"
+                />
+              </div>
+            </div>
           </>
         )}
 
@@ -933,28 +1082,40 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
 
             <div className="pt-2 border-t border-slate-200">
               <div className="text-xs font-bold text-slate-800 mb-1">
-                Element-by-Element Text Styling
+                Every Element Styling (Color, Size, B / I / U)
               </div>
               <TextStyleRow
                 label="Header & Meta Text"
                 value={styleConfig.headerMetaStyle}
+                showUnderline
                 onChange={(headerMetaStyle) =>
                   onStyleChange((prev) => ({ ...prev, headerMetaStyle }))
                 }
               />
               <TextStyleRow
+                label="Chapter & Topic Title Line"
+                value={styleConfig.chapterLineStyle}
+                showUnderline
+                onChange={(chapterLineStyle) =>
+                  onStyleChange((prev) => ({ ...prev, chapterLineStyle }))
+                }
+              />
+              <TextStyleRow
                 label="MCQ / Objective Question Stem"
                 value={styleConfig.questionStyle}
+                showUnderline
                 onChange={(questionStyle) => onStyleChange((prev) => ({ ...prev, questionStyle }))}
               />
               <TextStyleRow
                 label="MCQ Options (A, B, C, D)"
                 value={styleConfig.optionStyle}
+                showUnderline
                 onChange={(optionStyle) => onStyleChange((prev) => ({ ...prev, optionStyle }))}
               />
               <TextStyleRow
                 label="Subjective Question Text"
                 value={styleConfig.subjectiveStyle}
+                showUnderline
                 onChange={(subjectiveStyle) =>
                   onStyleChange((prev) => ({ ...prev, subjectiveStyle }))
                 }
@@ -962,6 +1123,7 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
               <TextStyleRow
                 label="Match Left Column (Column I)"
                 value={styleConfig.matchLeftStyle}
+                showUnderline
                 onChange={(matchLeftStyle) =>
                   onStyleChange((prev) => ({ ...prev, matchLeftStyle }))
                 }
@@ -969,40 +1131,43 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
               <TextStyleRow
                 label="Match Right Column (Column II)"
                 value={styleConfig.matchRightStyle}
+                showUnderline
                 onChange={(matchRightStyle) =>
                   onStyleChange((prev) => ({ ...prev, matchRightStyle }))
                 }
               />
-            </div>
-
-            {/* Assertion & Reason Colors */}
-            <div className="pt-2 border-t border-slate-200 grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                  Assertion (A) Color
-                </label>
-                <input
-                  type="color"
-                  value={styleConfig.assertionColor}
-                  onChange={(e) =>
-                    onStyleChange((prev) => ({ ...prev, assertionColor: e.target.value }))
-                  }
-                  className="w-full h-8 p-0.5 rounded border border-slate-300 bg-white cursor-pointer"
-                />
-              </div>
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                  Reason (R) Color
-                </label>
-                <input
-                  type="color"
-                  value={styleConfig.reasonColor}
-                  onChange={(e) =>
-                    onStyleChange((prev) => ({ ...prev, reasonColor: e.target.value }))
-                  }
-                  className="w-full h-8 p-0.5 rounded border border-slate-300 bg-white cursor-pointer"
-                />
-              </div>
+              <TextStyleRow
+                label="Assertion (A) Statement"
+                value={styleConfig.assertionStyle}
+                showUnderline
+                onChange={(assertionStyle) =>
+                  onStyleChange((prev) => ({ ...prev, assertionStyle }))
+                }
+              />
+              <TextStyleRow
+                label="Reason (R) Statement"
+                value={styleConfig.reasonStyle}
+                showUnderline
+                onChange={(reasonStyle) => onStyleChange((prev) => ({ ...prev, reasonStyle }))}
+              />
+              <TextStyleRow
+                label="Marks Badge & PYQ Pattern Tag"
+                value={styleConfig.metaTagStyle}
+                showUnderline
+                onChange={(metaTagStyle) => onStyleChange((prev) => ({ ...prev, metaTagStyle }))}
+              />
+              <TextStyleRow
+                label="Answer Key & Solutions Text"
+                value={styleConfig.solutionStyle}
+                showUnderline
+                onChange={(solutionStyle) => onStyleChange((prev) => ({ ...prev, solutionStyle }))}
+              />
+              <TextStyleRow
+                label="Paper Footer Text"
+                value={styleConfig.footerStyle}
+                showUnderline
+                onChange={(footerStyle) => onStyleChange((prev) => ({ ...prev, footerStyle }))}
+              />
             </div>
 
             {/* Figure / Diagram & Organic Structure Controls */}
@@ -1112,16 +1277,27 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
       </div>
 
       {/* Sticky Bottom Generate CTA */}
-      <div className="p-3.5 border-t border-slate-200 bg-slate-50">
+      <div className="p-3.5 border-t border-slate-200 bg-slate-50 flex items-center gap-2">
         <button
           type="button"
           onClick={onGenerate}
           disabled={isGenerating || !form.chapter.trim() || !form.topic.trim()}
-          className="w-full py-2.5 px-4 inline-flex items-center justify-center gap-2 text-sm font-semibold text-white bg-blue-700 hover:bg-blue-800 disabled:bg-slate-400 rounded-lg transition-colors shadow-xs cursor-pointer"
+          className="flex-1 py-2.5 px-4 inline-flex items-center justify-center gap-2 text-sm font-semibold text-white bg-blue-700 hover:bg-blue-800 disabled:bg-slate-400 rounded-lg transition-colors shadow-xs cursor-pointer"
         >
           <Sparkles className={`w-4 h-4 ${isGenerating ? 'animate-spin' : ''}`} />
           <span>{isGenerating ? 'Generating PYQ DPP & Solutions...' : 'Generate DPP & Answer Key'}</span>
         </button>
+        {isGenerating && onCancelGenerate && (
+          <button
+            type="button"
+            onClick={onCancelGenerate}
+            title="Stop Generation"
+            className="py-2.5 px-3 inline-flex items-center justify-center gap-1 text-xs font-semibold text-red-700 bg-red-50 hover:bg-red-100 border border-red-200 rounded-lg transition-colors cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+            <span>Stop</span>
+          </button>
+        )}
       </div>
     </aside>
   );

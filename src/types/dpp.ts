@@ -14,6 +14,7 @@ export type QuestionType =
   | 'subjective';
 
 export type LanguageMedium = 'English' | 'Hindi' | 'Bilingual';
+export type AiReasoningMode = 'deep' | 'fast';
 
 export interface ReactionScheme {
   reactants: string[]; // SMILES strings
@@ -85,7 +86,7 @@ export interface TextStyleConfig {
   fontSize: number; // in px
   bold: boolean;
   italic: boolean;
-  underline?: boolean;
+  underline: boolean;
 }
 
 export type PageOrientation = 'portrait' | 'landscape';
@@ -105,7 +106,7 @@ export interface DppStyleConfig {
   dateText: string;
   footerNote: string;
 
-  // Paper Layout & Border
+  // Paper Layout, Border & Watermark
   orientation: PageOrientation;
   columns: 1 | 2;
   pageColor: string;
@@ -113,16 +114,27 @@ export interface DppStyleConfig {
   borderColor: string;
   borderWidth: number;
   paperFontFamily: PaperFontFamily;
+  showWatermark: boolean;
+  watermarkOpacity: number; // 4 to 20 (%)
+  questionSpacing: number; // 8 to 28 (px)
 
-  // Element Typography & Colors
+  // Granular Element Typography & Colors (All support size, color, bold, italic, underline)
   headerMetaStyle: TextStyleConfig;
+  chapterLineStyle: TextStyleConfig;
   questionStyle: TextStyleConfig;
   optionStyle: TextStyleConfig;
   subjectiveStyle: TextStyleConfig;
   matchLeftStyle: TextStyleConfig;
   matchRightStyle: TextStyleConfig;
-  assertionColor: string;
-  reasonColor: string;
+  assertionStyle: TextStyleConfig;
+  reasonStyle: TextStyleConfig;
+  metaTagStyle: TextStyleConfig;
+  solutionStyle: TextStyleConfig;
+  footerStyle: TextStyleConfig;
+
+  // Legacy fallback fields kept optional for smooth migration
+  assertionColor?: string;
+  reasonColor?: string;
 
   // Figure / Diagram Styling
   figureColor: string;
@@ -151,5 +163,6 @@ export interface GenerateDppPayload {
   referenceBooks: string[];
   marksPerQuestion: number;
   negativeMarks: number;
+  aiMode: AiReasoningMode;
   customInstructions?: string;
 }

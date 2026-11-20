@@ -91,19 +91,32 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   });
 }
 
-async function callGeminiWithRetry(
+async function callGeminiWithRetry<T = any>(
   ai: GoogleGenAI,
   prompt: string,
   schema: Record<string, unknown>,
   onProgress?: (msg: string) => void,
-) {
+  options?: {
+    aiMode?: 'deep' | 'fast';
+    validate?: (parsed: T) => boolean;
+  },
+): Promise<T> {
   const now = Date.now();
-  const attempts: { model: string; thinkingLevel?: ThinkingLevel; timeoutMs: number }[] = [
-    { model: 'gemini-3.1-flash-lite', timeoutMs: 55000 },
-    { model: 'gemini-3.1-flash-lite', timeoutMs: 55000 },
-  ];
+  const isDeep = options?.aiMode === 'deep';
+  const attempts: { model: string; thinkingLevel?: ThinkingLevel; timeoutMs: number }[] = [];
 
-  if (now > hydrogenCooldownUntil) {
+  if (isDeep && now > hydrogenCooldownUntil) {
+    attempts.push({
+      model: 'gemini-4-hydrogen',
+      thinkingLevel: ThinkingLevel.HIGH,
+      timeoutMs: 45000,
+    });
+  }
+
+  attempts.push({ model: 'gemini-3.1-flash-lite', timeoutMs: 55000 });
+  attempts.push({ model: 'gemini-3.1-flash-lite', timeoutMs: 55000 });
+
+  if (!isDeep && now > hydrogenCooldownUntil) {
     attempts.push({
       model: 'gemini-4-hydrogen',
       thinkingLevel: ThinkingLevel.LOW,
@@ -117,13 +130,14 @@ async function callGeminiWithRetry(
     try {
       onProgress?.(
         i === 0
-          ? `Generating with ${attempt.model}...`
-          : `Switching to ${attempt.model} (attempt ${i + 1})...`,
+          ? `Generating with ${attempt.model}${isDeep && attempt.thinkingLevel ? ' (Deep Reasoning)' : ''}...`
+          : `Retrying with ${attempt.model} (attempt ${i + 1}/${attempts.length})...`,
       );
 
       const config: Record<string, unknown> = {
         responseMimeType: 'application/json',
         responseSchema: schema,
+        temperature: isDeep ? 0.35 : 0.45,
       };
       if (attempt.thinkingLevel) {
         config.thinkingConfig = { thinkingLevel: attempt.thinkingLevel };
@@ -143,19 +157,26 @@ async function callGeminiWithRetry(
       if (!rawText || rawText === '{}') {
         throw new Error('Empty JSON response from Gemini model.');
       }
-      return JSON.parse(rawText);
+      const parsed = JSON.parse(rawText) as T;
+      if (options?.validate && !options.validate(parsed)) {
+        throw new Error('Incomplete question batch returned by model.');
+      }
+      return parsed;
     } catch (err) {
       lastError = err;
-      if (attempt.model === 'gemini-4-hydrogen' && isQuotaExhaustedError(err)) {
+      const isQuota = isQuotaExhaustedError(err);
+      if (attempt.model === 'gemini-4-hydrogen' && isQuota) {
         // Put gemini-4-hydrogen on 1-hour cooldown so we immediately use gemini-3.1-flash-lite
         hydrogenCooldownUntil = Date.now() + 60 * 60 * 1000;
       }
       const reason = err instanceof Error ? err.message.slice(0, 140) : String(err);
       console.warn(`Gemini attempt ${i + 1} (${attempt.model}) failed: ${reason}`);
-      if (!isRetryableError(err) || i === attempts.length - 1) {
+      if ((!isRetryableError(err) && !/Empty JSON|Incomplete question/i.test(reason)) || i === attempts.length - 1) {
         throw err;
       }
-      await sleep(attempt.model === 'gemini-3.1-flash-lite' ? 1500 : 300);
+      // Longer backoff for free-tier RPM 429 on flash-lite to avoid tight retry loops
+      const delayMs = isQuota && attempt.model === 'gemini-3.1-flash-lite' ? 3500 : 1200;
+      await sleep(delayMs);
     }
   }
   throw lastError;
@@ -333,34 +354,34 @@ function buildPedagogicalPrompt(
   if (isJunior) {
     if (body.juniorTier === 'Olympiad Level') {
       levelCalibration = `CRITICAL CALIBRATION (Class ${body.classLevel} ${body.juniorBoard} — OLYMPIAD LEVEL):
-- Match the exact rigor of IOQM / PRMO / NSEJS / IJSO / SOF Level-2 / NTSE Stage-2 archives.
+- Match the exact rigor of IOQM / PRMO / RMO / NSEJS / IJSO / SOF Level-2 / NTSE Stage-2 archives and books like Pathfinder Olympiad, Hall & Knight, S.L. Loney.
 - Avoid trivial textbook recall; test multi-step analytical reasoning, hidden constraints, clever algebraic/geometric insight, or experimental logic.`;
     } else {
       levelCalibration = `CRITICAL CALIBRATION (Class ${body.classLevel} ${body.juniorBoard} — SCHOOL / BOARD LEVEL):
-- Match the exact latest ${body.juniorBoard} Board blueprint and model question paper style (${body.juniorBoard === 'JAC' ? 'Jharkhand Academic Council / JCERT pattern' : body.juniorBoard === 'ICSE' ? 'CISCE ICSE Selina / analytical board pattern' : 'CBSE Competency & Case-based NCERT pattern'}).
+- Match the exact latest ${body.juniorBoard} Board blueprint and model question paper style (${body.juniorBoard === 'JAC' ? 'Jharkhand Academic Council / JCERT pattern' : body.juniorBoard === 'ICSE' ? 'CISCE ICSE Selina / ML Aggarwal / analytical board pattern' : 'CBSE Competency & Case-based NCERT / RD Sharma pattern'}).
 - Maintain strict Class ${body.classLevel} syllabus boundaries.`;
     }
   } else {
     if (body.seniorExam === 'JEE Advanced') {
       levelCalibration = `CRITICAL CALIBRATION (Class ${body.classLevel} — JEE ADVANCED IIT PATTERN):
-- Match genuine JEE Advanced (IIT) PYQ depth and books like H.C. Verma, Irodov, Pathfinder, Cengage, M.S. Chouhan, N. Awasthi, Black Book.
-- NEVER generate trivial one-line NEET/board recall questions! Every problem must require multi-concept synthesis, calculus/vectors where natural, edge-case analysis, stereochemical/mechanistic rigor, or subtle physical principles.`;
+- Match genuine JEE Advanced (IIT) PYQ depth and elite books: H.C. Verma, Irodov, Pathfinder, Cengage (BM Sharma / G. Tewani), Vikas Gupta (Black Book), Sameer Bansal, A. Das Gupta, S.L. Loney, Hall & Knight, M.S. Chouhan, N. Awasthi.
+- NEVER generate trivial one-line NEET/board recall questions! Every problem must require multi-concept synthesis, calculus/vectors/functional analysis where natural, edge-case traps, stereochemical/mechanistic rigor, or subtle physical principles.`;
     } else if (body.seniorExam === 'JEE Mains') {
       levelCalibration = `CRITICAL CALIBRATION (Class ${body.classLevel} — JEE MAIN NTA LATEST PATTERN):
-- Match recent 2022–2026 NTA JEE Main PYQ shifts and Cengage / Arihant / HC Verma problem standards.
-- Balanced numerical calculation, formula synthesis, statement/assertion-reason, and conceptual traps.`;
+- Match recent 2022–2026 NTA JEE Main PYQ shifts and Cengage (G. Tewani / BM Sharma) / Arihant Skills in Mathematics / HC Verma problem standards.
+- Balanced numerical calculation, formula synthesis, statement/assertion-reason, and subtle conceptual traps.`;
     } else if (body.seniorExam === 'NEET') {
       levelCalibration = `CRITICAL CALIBRATION (Class ${body.classLevel} — NEET UG MEDICAL PATTERN):
 - Match latest NTA NEET (UG) PYQ pattern: strict NCERT line-by-line conceptual precision, NCERT Exemplar traps, assertion-reason, statement matching, and crisp speed-solvable physics/chemistry numericals (no heavy JEE-Advanced calculus).`;
     } else {
       levelCalibration = `CRITICAL CALIBRATION (Class ${body.classLevel} — BOARD EXAMS CBSE/JAC/ISC):
-- Match latest Board Exam blueprint (1-mark MCQs/A&R, 2/3/5-mark derivations, numericals, and conceptual board PYQs).`;
+- Match latest Board Exam blueprint (1-mark MCQs/A&R, 2/3/5-mark derivations, RD Sharma / ML Aggarwal / SL Arora numericals, and conceptual board PYQs).`;
     }
   }
 
-  return `You are a senior Indian academic paper-setter for Classes 7–12 (authoring at the standard of HC Verma, Cengage, Arihant, MS Chouhan, NCERT, ICSE Selina, and JAC/CBSE Boards).
+  return `You are a Principal Indian Olympiad & JEE/NEET/Board Paper-Setter for Classes 7–12 (authoring at the international publication standard of HC Verma, Cengage, Vikas Gupta Black Book, Sameer Bansal, Arihant, MS Chouhan, N. Awasthi, NCERT, ICSE Selina, and JAC/CBSE Boards).
 
-TASK: Generate EXACTLY ${batchCount} questions numbered starting from ${startNumber} (${startNumber} to ${startNumber + batchCount - 1}).
+TASK: Generate EXACTLY ${batchCount} ORIGINAL, MATHEMATICALLY VERIFIED questions numbered starting from ${startNumber} (${startNumber} to ${startNumber + batchCount - 1}).
 
 TARGET SPECIFICATION:
 - Class: Class ${body.classLevel}
@@ -374,6 +395,11 @@ TARGET SPECIFICATION:
 - Diagram / Figure Requirement: Generate high-precision diagrams for AT LEAST ${targetDiagramCount} out of ${batchCount} questions (${body.diagramPercentage}%). If ${body.diagramPercentage} === 0, set diagram.kind = 'none' for all questions.
 
 ${levelCalibration}
+
+SELF-VERIFICATION & DISTRACTOR QUALITY PROTOCOL (MANDATORY BEFORE OUTPUT):
+1. Verify every single calculation, algebraic sign, boundary limit, dimensional unit, and chemical stoichiometry step-by-step internally BEFORE finalizing "correctAnswer" and "solutionSteps".
+2. Ensure zero ambiguity: for single-correct MCQ, EXACTLY ONE option among (A), (B), (C), (D) must equal the verified answer; the other 3 distractors must represent realistic student mistakes (e.g., sign flip, missing factor of 2, wrong directing group, boundary confusion) — never absurd or obvious throwaway options.
+3. For subjective/numerical proof questions, provide complete step-by-step mathematical derivations in solutionSteps using crisp LaTeX.
 
 DIAGRAM & TYPESETTING RULES (INTERNATIONAL PUBLICATION STANDARD):
 1. MATH & EQUATIONS: Use standard LaTeX wrapped in $...$ (inline) or $$...$$ (display). For inorganic formulas/reactions, use $\\ce{...}$. Double-escape backslashes properly in JSON strings (e.g. "\\\\frac{1}{2}").
@@ -390,8 +416,8 @@ DIAGRAM & TYPESETTING RULES (INTERNATIONAL PUBLICATION STANDARD):
    - 'true_false': options A: True, B: False.
    - 'fill_blank': include "________" in stem.
    - 'subjective': leave options empty.
-${avoidStems.length > 0 ? `\nDO NOT REPEAT THESE PREVIOUS QUESTIONS:\n${avoidStems.map((s, idx) => `${idx + 1}. ${s.slice(0, 90)}`).join('\n')}` : ''}
-${body.customInstructions ? `\nEXTRA TEACHER INSTRUCTIONS:\n${body.customInstructions}` : ''}`;
+${avoidStems.length > 0 ? `\nDO NOT REPEAT OR PARAPHRASE THESE PREVIOUS QUESTIONS:\n${avoidStems.map((s, idx) => `${idx + 1}. ${s.slice(0, 90)}`).join('\n')}` : ''}
+${body.customInstructions?.trim() ? `\nHIGH-PRIORITY TEACHER / ADMIN INSTRUCTIONS (MUST FOLLOW STRICTLY):\n${body.customInstructions.trim()}` : ''}`;
 }
 
 app.get('/api/health', (_req, res) => {
@@ -406,6 +432,14 @@ app.post('/api/dpp/generate', async (req, res) => {
 
   const wantsStream = req.headers.accept?.includes('application/x-ndjson');
   let heartbeat: ReturnType<typeof setInterval> | null = null;
+  let clientAborted = false;
+
+  req.on('close', () => {
+    if (!res.writableEnded) {
+      clientAborted = true;
+    }
+    if (heartbeat) clearInterval(heartbeat);
+  });
 
   if (wantsStream) {
     res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
@@ -415,7 +449,7 @@ app.post('/api/dpp/generate', async (req, res) => {
     res.write(JSON.stringify({ type: 'progress', message: 'Initializing PYQ paper-setter...' }) + '\n');
 
     heartbeat = setInterval(() => {
-      if (!res.writableEnded) {
+      if (!res.writableEnded && !clientAborted) {
         res.write(JSON.stringify({ type: 'ping' }) + '\n');
       }
     }, 2000);
@@ -427,6 +461,7 @@ app.post('/api/dpp/generate', async (req, res) => {
     const marks = Number(body.marksPerQuestion) || 4;
     const neg = Number(body.negativeMarks) || 0;
     const isJunior = parseInt(body.classLevel, 10) <= 10;
+    const aiMode = body.aiMode === 'deep' ? 'deep' : 'fast';
 
     // Smart batch size: up to 10 questions per call (8 when heavy diagrams) so 30 questions cleanly split into 3-4 batches
     const batchSizes: number[] = [];
@@ -461,8 +496,14 @@ app.post('/api/dpp/generate', async (req, res) => {
     });
 
     for (let bIdx = 0; bIdx < batchSizes.length; bIdx++) {
+      if (clientAborted) {
+        break;
+      }
       if (bIdx > 0) {
         await sleep(1200);
+      }
+      if (clientAborted) {
+        break;
       }
 
       const batchSize = batchSizes[bIdx];
@@ -475,20 +516,33 @@ app.post('/api/dpp/generate', async (req, res) => {
           ? `Generating batch ${bIdx + 1}/${batchSizes.length} (Q${startNum}–Q${startNum + batchSize - 1})...`
           : undefined;
 
-      if (batchLabel && wantsStream && !res.writableEnded) {
+      if (batchLabel && wantsStream && !res.writableEnded && !clientAborted) {
         res.write(JSON.stringify({ type: 'progress', message: batchLabel }) + '\n');
       }
 
-      const parsed = await callGeminiWithRetry(ai, prompt, dppResponseSchema, (msg) => {
-        if (wantsStream && !res.writableEnded) {
-          res.write(
-            JSON.stringify({
-              type: 'progress',
-              message: batchLabel ? `${batchLabel} ${msg}` : msg,
-            }) + '\n',
-          );
-        }
-      });
+      const parsed = await callGeminiWithRetry<{
+        title?: string;
+        subtitle?: string;
+        questions?: Record<string, unknown>[];
+      }>(
+        ai,
+        prompt,
+        dppResponseSchema,
+        (msg) => {
+          if (wantsStream && !res.writableEnded && !clientAborted) {
+            res.write(
+              JSON.stringify({
+                type: 'progress',
+                message: batchLabel ? `${batchLabel} ${msg}` : msg,
+              }) + '\n',
+            );
+          }
+        },
+        {
+          aiMode,
+          validate: (data) => Array.isArray(data?.questions) && data.questions.length > 0,
+        },
+      );
 
       if (!sheetTitle && parsed.title) sheetTitle = parsed.title;
       if (!sheetSubtitle && parsed.subtitle) sheetSubtitle = parsed.subtitle;
@@ -505,14 +559,17 @@ app.post('/api/dpp/generate', async (req, res) => {
         });
       }
 
-      if (wantsStream && batchSizes.length > 1 && bIdx < batchSizes.length - 1 && !res.writableEnded) {
+      if (wantsStream && batchSizes.length > 1 && bIdx < batchSizes.length - 1 && !res.writableEnded && !clientAborted) {
         res.write(JSON.stringify({ type: 'batch', data: buildPayload() }) + '\n');
       }
     }
 
-    const payload = buildPayload();
-
     if (heartbeat) clearInterval(heartbeat);
+    if (clientAborted) {
+      return;
+    }
+
+    const payload = buildPayload();
 
     if (wantsStream) {
       res.write(JSON.stringify({ type: 'result', data: payload }) + '\n');
@@ -521,6 +578,9 @@ app.post('/api/dpp/generate', async (req, res) => {
     return res.json(payload);
   } catch (err: unknown) {
     if (heartbeat) clearInterval(heartbeat);
+    if (clientAborted) {
+      return;
+    }
     console.error('Error generating DPP:', err);
     const cleanMsg = extractCleanErrorMessage(err);
     const isAuthErr = /API_KEY_INVALID|PERMISSION_DENIED|GEMINI_API_KEY is not configured/i.test(
@@ -540,13 +600,13 @@ app.post('/api/dpp/generate', async (req, res) => {
 
 app.post('/api/dpp/regenerate-question', async (req, res) => {
   try {
-    const { metadata, existingQuestion, forceDiagram } = req.body;
+    const { metadata, existingQuestion, forceDiagram, customInstructions, aiMode } = req.body;
     if (!metadata || !existingQuestion) {
       return res.status(400).json({ error: 'Missing metadata or existingQuestion.' });
     }
 
     const ai = getAiClient();
-    const prompt = `Regenerate ONE fresh, completely different question (keeping the exact same question number ${existingQuestion.number} and type "${existingQuestion.type}") for:
+    const prompt = `Regenerate ONE fresh, completely different, mathematically verified question (keeping the exact same question number ${existingQuestion.number} and type "${existingQuestion.type}") for:
 - Class ${metadata.classLevel} (${metadata.boardOrExam} / ${metadata.tierOrLevel})
 - Subject: ${metadata.subject}
 - Chapter: ${metadata.chapter}
@@ -554,11 +614,15 @@ app.post('/api/dpp/regenerate-question', async (req, res) => {
 - Medium: ${metadata.medium}
 - Reference Books: ${(metadata.referenceBooks || []).join(', ')}
 - Diagram Requirement: ${forceDiagram ? 'MUST include a clean diagram (either SMILES/reaction for organic chemistry or crisp <svg viewBox="0 0 360 200"> with stroke="currentColor" for Physics/Math/Biology).' : 'Include a diagram if conceptually helpful.'}
+${customInstructions ? `- Teacher Instruction: ${customInstructions}` : ''}
 
 Do NOT repeat this previous stem: "${existingQuestion.stem}"
-Use standard LaTeX ($...$ / $$...$$ / $\\ce{...}$) and return JSON matching the schema.`;
+Verify algebra, units, and options internally. Use standard LaTeX ($...$ / $$...$$ / $\\ce{...}$) and return JSON matching the schema.`;
 
-    const parsed = await callGeminiWithRetry(ai, prompt, questionSchema);
+    const parsed = await callGeminiWithRetry<Record<string, unknown>>(ai, prompt, questionSchema, undefined, {
+      aiMode: aiMode === 'deep' ? 'deep' : 'fast',
+      validate: (q) => Boolean(q && q.stem && q.correctAnswer),
+    });
     return res.json({
       ...parsed,
       id: `q-${Date.now()}-${existingQuestion.number}`,
@@ -568,6 +632,86 @@ Use standard LaTeX ($...$ / $$...$$ / $\\ce{...}$) and return JSON matching the 
     });
   } catch (err: unknown) {
     console.error('Error regenerating question:', err);
+    return res.status(500).json({ error: extractCleanErrorMessage(err) });
+  }
+});
+
+app.post('/api/dpp/refine', async (req, res) => {
+  try {
+    const { dpp, instruction, aiMode } = req.body;
+    if (!dpp || !Array.isArray(dpp.questions) || !instruction?.trim()) {
+      return res.status(400).json({ error: 'Existing DPP and refinement instruction are required.' });
+    }
+
+    const ai = getAiClient();
+    const compactQuestions = dpp.questions.map((q: Record<string, unknown>) => ({
+      number: q.number,
+      type: q.type,
+      pyqTag: q.pyqTag,
+      stem: q.stem,
+      options: q.options,
+      assertion: q.assertion,
+      reason: q.reason,
+      matchColumns: q.matchColumns,
+      diagram: q.diagram,
+      correctAnswer: q.correctAnswer,
+      solutionSteps: q.solutionSteps,
+    }));
+
+    const prompt = `You are a Principal Indian Academic Editor & Paper-Setter.
+Modify the existing DPP sheet below STRICTLY according to the Teacher's Refinement Instruction.
+
+TEACHER'S REFINEMENT INSTRUCTION:
+"${instruction.trim()}"
+
+METADATA:
+- Class: ${dpp.metadata?.classLevel} (${dpp.metadata?.boardOrExam} · ${dpp.metadata?.tierOrLevel})
+- Subject: ${dpp.metadata?.subject}
+- Chapter: ${dpp.metadata?.chapter}
+- Topic: ${dpp.metadata?.topic}
+- Medium: ${dpp.metadata?.medium}
+
+RULES:
+1. Keep the same question count (${compactQuestions.length}) unless the instruction explicitly asks to change it.
+2. Preserve crisp LaTeX ($...$ / $$...$$ / $\\ce{...}$), valid SMILES for organic chemistry, and clean <svg viewBox="0 0 360 200"> with stroke="currentColor" for diagrams.
+3. Verify every answer key and step-by-step solution after modifying.
+4. Return the complete updated DPP JSON matching the schema.
+
+CURRENT QUESTIONS JSON:
+${JSON.stringify({ title: dpp.title, subtitle: dpp.subtitle, questions: compactQuestions })}`;
+
+    const parsed = await callGeminiWithRetry<{
+      title?: string;
+      subtitle?: string;
+      questions?: Record<string, unknown>[];
+    }>(ai, prompt, dppResponseSchema, undefined, {
+      aiMode: aiMode === 'deep' ? 'deep' : 'fast',
+      validate: (data) => Array.isArray(data?.questions) && data.questions.length > 0,
+    });
+
+    const updatedQuestions = (parsed.questions || []).map((q, idx) => {
+      const orig = dpp.questions[idx] || dpp.questions[0] || {};
+      return {
+        ...q,
+        id: `q-${Date.now()}-${idx + 1}`,
+        number: idx + 1,
+        marks: Number(orig.marks) || 4,
+        negativeMarks:
+          q.type === 'mcq' || q.type === 'multiple_correct' || q.type === 'assertion_reason'
+            ? Number(orig.negativeMarks) || 0
+            : 0,
+      };
+    });
+
+    return res.json({
+      ...dpp,
+      title: parsed.title || dpp.title,
+      subtitle: parsed.subtitle || dpp.subtitle,
+      isStarterPreview: false,
+      questions: updatedQuestions,
+    });
+  } catch (err: unknown) {
+    console.error('Error refining DPP:', err);
     return res.status(500).json({ error: extractCleanErrorMessage(err) });
   }
 });

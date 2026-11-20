@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
-import { FileText, KeyRound, Printer, ZoomIn, ZoomOut, AlertCircle } from 'lucide-react';
-import { DEFAULT_STYLE_CONFIG, getChaptersForSelection, REFERENCE_BOOKS_BY_PROFILE } from './data/curriculum';
+import { useEffect, useRef, useState } from 'react';
+import { FileText, KeyRound, Printer, ZoomIn, ZoomOut, AlertCircle, Sparkles } from 'lucide-react';
+import { DEFAULT_STYLE_CONFIG, getChaptersForSelection, getRecommendedBooks } from './data/curriculum';
 import { STARTER_DPP } from './data/starterDpp';
-import { DppDocument, DppQuestion, DppStyleConfig, GenerateDppPayload } from './types/dpp';
+import { DppDocument, DppQuestion, DppStyleConfig, GenerateDppPayload, TextStyleConfig } from './types/dpp';
 import { StudioSidebar, SidebarTab } from './components/StudioSidebar';
 import { DppPaperView } from './components/DppPaperView';
 
@@ -16,6 +16,44 @@ interface SavedDppEntry {
   doc: DppDocument;
 }
 
+function mergeTextStyle(
+  saved: Partial<TextStyleConfig> | undefined,
+  fallback: TextStyleConfig,
+): TextStyleConfig {
+  return {
+    ...fallback,
+    ...(saved || {}),
+    underline: saved?.underline ?? fallback.underline,
+  };
+}
+
+function mergeStyleConfig(raw: Partial<DppStyleConfig>): DppStyleConfig {
+  return {
+    ...DEFAULT_STYLE_CONFIG,
+    ...raw,
+    brandStyle: mergeTextStyle(raw.brandStyle, DEFAULT_STYLE_CONFIG.brandStyle),
+    subtitleStyle: mergeTextStyle(raw.subtitleStyle, DEFAULT_STYLE_CONFIG.subtitleStyle),
+    headerMetaStyle: mergeTextStyle(raw.headerMetaStyle, DEFAULT_STYLE_CONFIG.headerMetaStyle),
+    chapterLineStyle: mergeTextStyle(raw.chapterLineStyle, DEFAULT_STYLE_CONFIG.chapterLineStyle),
+    questionStyle: mergeTextStyle(raw.questionStyle, DEFAULT_STYLE_CONFIG.questionStyle),
+    optionStyle: mergeTextStyle(raw.optionStyle, DEFAULT_STYLE_CONFIG.optionStyle),
+    subjectiveStyle: mergeTextStyle(raw.subjectiveStyle, DEFAULT_STYLE_CONFIG.subjectiveStyle),
+    matchLeftStyle: mergeTextStyle(raw.matchLeftStyle, DEFAULT_STYLE_CONFIG.matchLeftStyle),
+    matchRightStyle: mergeTextStyle(raw.matchRightStyle, DEFAULT_STYLE_CONFIG.matchRightStyle),
+    assertionStyle: mergeTextStyle(raw.assertionStyle, {
+      ...DEFAULT_STYLE_CONFIG.assertionStyle,
+      color: raw.assertionColor || DEFAULT_STYLE_CONFIG.assertionStyle.color,
+    }),
+    reasonStyle: mergeTextStyle(raw.reasonStyle, {
+      ...DEFAULT_STYLE_CONFIG.reasonStyle,
+      color: raw.reasonColor || DEFAULT_STYLE_CONFIG.reasonStyle.color,
+    }),
+    metaTagStyle: mergeTextStyle(raw.metaTagStyle, DEFAULT_STYLE_CONFIG.metaTagStyle),
+    solutionStyle: mergeTextStyle(raw.solutionStyle, DEFAULT_STYLE_CONFIG.solutionStyle),
+    footerStyle: mergeTextStyle(raw.footerStyle, DEFAULT_STYLE_CONFIG.footerStyle),
+  };
+}
+
 export default function App() {
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('curriculum');
   const [docMode, setDocMode] = useState<'questions' | 'answers'>('questions');
@@ -25,7 +63,7 @@ export default function App() {
     try {
       const saved = localStorage.getItem(STYLE_STORAGE_KEY);
       if (saved) {
-        return { ...DEFAULT_STYLE_CONFIG, ...JSON.parse(saved) };
+        return mergeStyleConfig(JSON.parse(saved) as Partial<DppStyleConfig>);
       }
     } catch {
       // Ignore storage error
@@ -55,9 +93,10 @@ export default function App() {
     questionTypes: ['mcq', 'match_following', 'assertion_reason', 'subjective'],
     diagramPercentage: 50,
     medium: 'English',
-    referenceBooks: REFERENCE_BOOKS_BY_PROFILE['JEE Advanced'].slice(0, 4),
+    referenceBooks: getRecommendedBooks('JEE Advanced', 'Physics').slice(0, 4),
     marksPerQuestion: 4,
     negativeMarks: 1,
+    aiMode: 'fast',
     customInstructions: '',
   });
 
@@ -100,10 +139,13 @@ export default function App() {
   }, [history]);
 
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isRefining, setIsRefining] = useState(false);
+  const [refineInstruction, setRefineInstruction] = useState('');
   const [hasPartialBatch, setHasPartialBatch] = useState(false);
   const [progressMsg, setProgressMsg] = useState<string>('');
   const [regeneratingId, setRegeneratingId] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const postJsonWithRetry = async (url: string, payload: unknown, retries = 2) => {
     for (let attempt = 0; attempt <= retries; attempt++) {
@@ -139,7 +181,19 @@ export default function App() {
     throw new Error('Request failed after retries.');
   };
 
+  const handleCancelGenerate = () => {
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    setIsGenerating(false);
+    setHasPartialBatch(false);
+    setProgressMsg('');
+  };
+
   const handleGenerate = async () => {
+    abortControllerRef.current?.abort();
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     setErrorMsg(null);
     setIsGenerating(true);
     setHasPartialBatch(false);
@@ -148,6 +202,7 @@ export default function App() {
     try {
       let generated: DppDocument | null = null;
       for (let attempt = 0; attempt <= 2; attempt++) {
+        if (controller.signal.aborted) return;
         const res = await fetch('/api/dpp/generate', {
           method: 'POST',
           headers: {
@@ -155,6 +210,7 @@ export default function App() {
             Accept: 'application/x-ndjson',
           },
           body: JSON.stringify(form),
+          signal: controller.signal,
         });
 
         if (!res.ok) {
@@ -215,6 +271,7 @@ export default function App() {
         break;
       }
 
+      if (controller.signal.aborted) return;
       if (!generated) {
         throw new Error('No DPP payload received from server.');
       }
@@ -229,11 +286,37 @@ export default function App() {
       });
       setDocMode('questions');
     } catch (err: unknown) {
+      if ((err as { name?: string })?.name === 'AbortError') {
+        return;
+      }
       setErrorMsg(err instanceof Error ? err.message : 'Unable to generate DPP.');
     } finally {
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+      }
       setIsGenerating(false);
       setHasPartialBatch(false);
       setProgressMsg('');
+    }
+  };
+
+  const handleRefineDpp = async (overrideInstruction?: string) => {
+    const instruction = (overrideInstruction ?? refineInstruction).trim();
+    if (!instruction || isRefining || isGenerating) return;
+    setErrorMsg(null);
+    setIsRefining(true);
+    try {
+      const updated = (await postJsonWithRetry('/api/dpp/refine', {
+        dpp,
+        instruction,
+        aiMode: form.aiMode,
+      })) as unknown as DppDocument;
+      setDpp(updated);
+      setRefineInstruction('');
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Unable to refine DPP.');
+    } finally {
+      setIsRefining(false);
     }
   };
 
@@ -245,6 +328,8 @@ export default function App() {
         metadata: dpp.metadata,
         existingQuestion: q,
         forceDiagram,
+        customInstructions: form.customInstructions,
+        aiMode: form.aiMode,
       })) as unknown as DppQuestion;
       setDpp((prev) => ({
         ...prev,
@@ -372,6 +457,7 @@ export default function App() {
           onStyleChange={setStyleConfig}
           onResetStyles={() => setStyleConfig(DEFAULT_STYLE_CONFIG)}
           onGenerate={handleGenerate}
+          onCancelGenerate={handleCancelGenerate}
           isGenerating={isGenerating}
         />
 
@@ -484,6 +570,49 @@ export default function App() {
                 </button>
               </div>
             </div>
+          </div>
+
+          {/* Direct AI Refine Current Sheet Bar */}
+          <div className="no-print bg-slate-50/90 border-b border-slate-200 px-4 py-2 flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-1.5 text-[11px] font-bold text-blue-800 shrink-0">
+              <Sparkles className={`w-3.5 h-3.5 ${isRefining ? 'animate-spin' : ''}`} />
+              <span>AI Refine Sheet:</span>
+            </div>
+            <input
+              type="text"
+              value={refineInstruction}
+              onChange={(e) => setRefineInstruction(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleRefineDpp();
+              }}
+              placeholder="Give AI a direct command on this sheet (e.g. 'Make Q2 tougher', 'Translate to Hindi', 'Add diagrams to all questions')..."
+              className="flex-1 min-w-[220px] px-2.5 py-1 text-xs bg-white border border-slate-300 rounded-md text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
+            />
+            <div className="hidden sm:flex items-center gap-1">
+              {[
+                { label: 'Harder Level', cmd: 'Upgrade all questions to tougher multi-concept rank-booster level.' },
+                { label: 'Hindi Medium', cmd: 'Translate all questions, options, and solutions cleanly into academic Hindi Devanagari keeping LaTeX math.' },
+                { label: 'Add Diagrams', cmd: 'Add crisp labelled SVG physics/math diagrams or SMILES structures wherever helpful.' },
+              ].map((preset) => (
+                <button
+                  key={preset.label}
+                  type="button"
+                  disabled={isRefining || isGenerating}
+                  onClick={() => handleRefineDpp(preset.cmd)}
+                  className="px-2 py-1 text-[10.5px] font-semibold bg-white hover:bg-blue-50 text-slate-700 hover:text-blue-800 border border-slate-200 rounded transition-colors disabled:opacity-50"
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={() => handleRefineDpp()}
+              disabled={isRefining || isGenerating || !refineInstruction.trim()}
+              className="px-3 py-1 text-xs font-semibold bg-blue-700 hover:bg-blue-800 disabled:bg-slate-400 text-white rounded-md transition-colors whitespace-nowrap cursor-pointer"
+            >
+              {isRefining ? 'Refining...' : 'Apply AI Edit'}
+            </button>
           </div>
 
           {/* Error Banner */}

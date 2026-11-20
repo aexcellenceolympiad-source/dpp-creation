@@ -16,14 +16,21 @@ interface DppPaperViewProps {
   onUpdateQuestion: (updated: DppQuestion) => void;
 }
 
-function toTextCss(cfg: TextStyleConfig): React.CSSProperties {
+function toTextCss(cfg?: Partial<TextStyleConfig>, fallback?: TextStyleConfig): React.CSSProperties {
+  const c: TextStyleConfig = {
+    color: cfg?.color ?? fallback?.color ?? '#0F172A',
+    fontSize: cfg?.fontSize ?? fallback?.fontSize ?? 13,
+    bold: cfg?.bold ?? fallback?.bold ?? false,
+    italic: cfg?.italic ?? fallback?.italic ?? false,
+    underline: cfg?.underline ?? fallback?.underline ?? false,
+  };
   return {
-    color: cfg.color,
-    fontSize: `${cfg.fontSize}px`,
-    fontWeight: cfg.bold ? 700 : 400,
-    fontStyle: cfg.italic ? 'italic' : 'normal',
-    textDecoration: cfg.underline ? 'underline' : 'none',
-    textUnderlineOffset: cfg.underline ? '4px' : undefined,
+    color: c.color,
+    fontSize: `${c.fontSize}px`,
+    fontWeight: c.bold ? 700 : 400,
+    fontStyle: c.italic ? 'italic' : 'normal',
+    textDecoration: c.underline ? 'underline' : 'none',
+    textUnderlineOffset: c.underline ? '4px' : undefined,
   };
 }
 
@@ -120,6 +127,24 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
         style={borderCss}
         aria-hidden="true"
       >
+        {styleConfig.showWatermark && (
+          <div
+            className="pointer-events-none select-none absolute inset-0 flex items-center justify-center overflow-hidden"
+            aria-hidden="true"
+          >
+            <div
+              className="font-bold uppercase tracking-[0.22em] text-center whitespace-nowrap"
+              style={{
+                color: styleConfig.brandStyle.color,
+                opacity: (styleConfig.watermarkOpacity ?? 8) / 100,
+                fontSize: isLandscape ? '48px' : '40px',
+                transform: 'rotate(-32deg)',
+              }}
+            >
+              {styleConfig.brandName || 'SAFAL ACADEMY LIVE'}
+            </div>
+          </div>
+        )}
         {styleConfig.borderStyle === 'ornate' && (
           <>
             <span
@@ -157,12 +182,32 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
       >
         {/* Screen Outer Edge-Flush Border Frame */}
         <div
-          className="print-screen-frame relative w-full box-border flex flex-col justify-between p-6 sm:p-7"
+          className="print-screen-frame relative w-full box-border flex flex-col justify-between p-6 sm:p-7 overflow-hidden"
           style={{
             minHeight: `${paperMinHeightMm}mm`,
             ...borderCss,
           }}
         >
+          {/* Screen Watermark Layer */}
+          {styleConfig.showWatermark && (
+            <div
+              className="no-print pointer-events-none select-none absolute inset-0 flex items-center justify-center overflow-hidden z-0"
+              aria-hidden="true"
+            >
+              <div
+                className="font-bold uppercase tracking-[0.22em] text-center whitespace-nowrap"
+                style={{
+                  color: styleConfig.brandStyle.color,
+                  opacity: (styleConfig.watermarkOpacity ?? 8) / 100,
+                  fontSize: isLandscape ? '48px' : '40px',
+                  transform: 'rotate(-32deg)',
+                }}
+              >
+                {styleConfig.brandName || 'SAFAL ACADEMY LIVE'}
+              </div>
+            </div>
+          )}
+
           {/* Ornate corner flourishes on screen */}
           {styleConfig.borderStyle === 'ornate' && (
             <>
@@ -233,8 +278,12 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                     </div>
 
                     <div
-                      className="mt-1.5 text-[12px] font-semibold"
-                      style={{ color: styleConfig.headerMetaStyle.color }}
+                      className="mt-1.5"
+                      style={toTextCss(styleConfig.chapterLineStyle, {
+                        ...styleConfig.headerMetaStyle,
+                        fontSize: 12,
+                        bold: true,
+                      })}
                     >
                       Chapter: {dpp.metadata.chapter} — Topic: {dpp.metadata.topic}
                     </div>
@@ -263,7 +312,7 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                       className={
                         styleConfig.columns === 2
                           ? 'columns-1 md:columns-2 print:columns-2 gap-6 [column-rule:1px_solid_rgba(148,163,184,0.35)]'
-                          : 'space-y-4'
+                          : ''
                       }
                     >
                       {dpp.questions.map((q) => {
@@ -271,11 +320,13 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                         const stemStyle = isSubjective
                           ? toTextCss(styleConfig.subjectiveStyle)
                           : toTextCss(styleConfig.questionStyle);
+                        const gapPx = styleConfig.questionSpacing ?? 14;
 
                         return (
                           <article
                             key={q.id}
-                            className="question-block-avoid-break group relative break-inside-avoid min-w-0 max-w-full mb-4 pb-3 border-b border-slate-200/70 last:border-b-0"
+                            className="question-block-avoid-break group relative break-inside-avoid min-w-0 max-w-full border-b border-slate-200/70 last:border-b-0"
+                            style={{ marginBottom: `${gapPx}px`, paddingBottom: `${Math.max(8, gapPx - 2)}px` }}
                           >
                             {/* Inline Teacher Controls (hidden on PDF print) */}
                             <div className="no-print opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity absolute -top-1 right-0 flex items-center gap-1 bg-white/95 border border-slate-200 rounded px-1.5 py-0.5 shadow-xs z-10">
@@ -319,13 +370,31 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                                 >
                                   Q{q.number}.
                                 </span>
-                                <span className="text-[10.5px] uppercase tracking-wider text-slate-500 font-medium">
+                                <span
+                                  className="uppercase tracking-wider"
+                                  style={toTextCss(styleConfig.metaTagStyle, {
+                                    color: '#64748B',
+                                    fontSize: 10.5,
+                                    bold: true,
+                                    italic: false,
+                                    underline: false,
+                                  })}
+                                >
                                   {getTypeLabel(q.type)}
                                   {styleConfig.showPyqTags && q.pyqTag ? ` · ${q.pyqTag}` : ''}
                                 </span>
                               </div>
                               {styleConfig.showMarksPerQuestion && (
-                                <span className="text-[11px] font-mono tabular-nums text-slate-600">
+                                <span
+                                  className="font-mono tabular-nums"
+                                  style={toTextCss(styleConfig.metaTagStyle, {
+                                    color: '#475569',
+                                    fontSize: 11,
+                                    bold: false,
+                                    italic: false,
+                                    underline: false,
+                                  })}
+                                >
                                   [+{q.marks}
                                   {q.negativeMarks > 0 ? ` / -${q.negativeMarks}` : ''}]
                                 </span>
@@ -436,10 +505,13 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                               <div className="mt-2 space-y-1.5 pl-3">
                                 {q.assertion && (
                                   <div
-                                    style={{
-                                      fontSize: stemStyle.fontSize,
-                                      color: styleConfig.assertionColor,
-                                    }}
+                                    style={toTextCss(styleConfig.assertionStyle, {
+                                      color: styleConfig.assertionColor || '#7C2D12',
+                                      fontSize: styleConfig.questionStyle.fontSize,
+                                      bold: false,
+                                      italic: false,
+                                      underline: false,
+                                    })}
                                   >
                                     <span className="font-bold">Assertion (A): </span>
                                     <MathText text={q.assertion} />
@@ -447,10 +519,13 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                                 )}
                                 {q.reason && (
                                   <div
-                                    style={{
-                                      fontSize: stemStyle.fontSize,
-                                      color: styleConfig.reasonColor,
-                                    }}
+                                    style={toTextCss(styleConfig.reasonStyle, {
+                                      color: styleConfig.reasonColor || '#1E40AF',
+                                      fontSize: styleConfig.questionStyle.fontSize,
+                                      bold: false,
+                                      italic: false,
+                                      underline: false,
+                                    })}
                                   >
                                     <span className="font-bold">Reason (R): </span>
                                     <MathText text={q.reason} />
@@ -677,10 +752,13 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
 
                               <ol
                                 className="list-decimal pl-5 space-y-1 leading-relaxed mt-1"
-                                style={{
+                                style={toTextCss(styleConfig.solutionStyle, {
                                   color: styleConfig.optionStyle.color,
-                                  fontSize: `${Math.max(11.5, styleConfig.questionStyle.fontSize - 0.5)}px`,
-                                }}
+                                  fontSize: Math.max(11.5, styleConfig.questionStyle.fontSize - 0.5),
+                                  bold: false,
+                                  italic: false,
+                                  underline: false,
+                                })}
                               >
                                 {q.solutionSteps.map((step, sIdx) => (
                                   <li key={sIdx}>
@@ -706,10 +784,16 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
 
           {/* Footer */}
           <footer
-            className="mt-6 pt-2 print:px-[8mm] print:pb-[5mm] flex items-center justify-between text-[10.5px] border-t"
+            className="mt-6 pt-2 print:px-[8mm] print:pb-[5mm] flex items-center justify-between border-t"
             style={{
               borderColor: `${styleConfig.borderColor}40`,
-              color: styleConfig.headerMetaStyle.color,
+              ...toTextCss(styleConfig.footerStyle, {
+                color: styleConfig.headerMetaStyle.color,
+                fontSize: 10.5,
+                bold: false,
+                italic: false,
+                underline: false,
+              }),
             }}
           >
             <span>{styleConfig.footerNote}</span>
