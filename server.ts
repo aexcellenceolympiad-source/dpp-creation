@@ -11,13 +11,13 @@ const __dirname = path.dirname(__filename);
 const app = express();
 app.use(express.json({ limit: '4mb' }));
 
-// Track model-specific daily quota exhaustion so we don't repeatedly hit a 429-exhausted model
+// Track model-specific cooldowns so we never repeatedly hit a 429-exhausted or 503-overloaded model
 let hydrogenCooldownUntil = 0;
 
-function getAiClient(): GoogleGenAI {
-  const apiKey = process.env.GEMINI_API_KEY;
+function getAiClient(): GoogleGenAI | null {
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
   if (!apiKey) {
-    throw new Error('GEMINI_API_KEY is not configured in the server environment.');
+    return null;
   }
   return new GoogleGenAI({
     apiKey,
@@ -29,10 +29,21 @@ function getAiClient(): GoogleGenAI {
   });
 }
 
+function getGroqApiKey(): string | null {
+  const key = process.env.GROQ_API_KEY?.trim();
+  return key || null;
+}
+
 function isQuotaExhaustedError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   const status = (err as { status?: number })?.status;
   return status === 429 || /429|RESOURCE_EXHAUSTED|quota exceeded|rate-limits/i.test(msg);
+}
+
+function isServiceUnavailableError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  const status = (err as { status?: number })?.status;
+  return status === 503 || /503|UNAVAILABLE|high demand|overloaded/i.test(msg);
 }
 
 function isRetryableError(err: unknown): boolean {
@@ -48,19 +59,18 @@ function isRetryableError(err: unknown): boolean {
 
 function extractCleanErrorMessage(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
-  if (/API_KEY_INVALID|PERMISSION_DENIED|GEMINI_API_KEY is not configured/i.test(raw)) {
-    return 'Gemini API key is missing or invalid. Please check Settings > Secrets.';
+  if (/API_KEY_INVALID|PERMISSION_DENIED|No AI API key/i.test(raw)) {
+    return 'No valid AI API key configured. Check GEMINI_API_KEY or GROQ_API_KEY in Environment / Secrets.';
   }
   if (/429|RESOURCE_EXHAUSTED|quota exceeded/i.test(raw)) {
     return 'Free-tier rate limit reached for this minute. Please wait 30–60 seconds and click Retry.';
   }
   if (/503|UNAVAILABLE|overloaded|high demand/i.test(raw)) {
-    return 'AI service is temporarily busy. Please click Generate again in a few seconds.';
+    return 'Gemini free servers are currently experiencing high demand (503). Click Retry or add GROQ_API_KEY in Render Environment for instant zero-wait backup.';
   }
   if (/TIMEOUT/i.test(raw)) {
-    return 'Request took too long. Try generating fewer questions (e.g. 5–10) at once.';
+    return 'Request took too long. Try Fast mode or generate 5–10 questions at once.';
   }
-  // Try extracting nested JSON message if present
   try {
     const parsed = JSON.parse(raw);
     if (parsed?.error?.message) {
@@ -69,7 +79,7 @@ function extractCleanErrorMessage(err: unknown): string {
   } catch {
     // ignore
   }
-  return raw.length > 220 ? raw.slice(0, 220) + '...' : raw;
+  return raw.length > 240 ? raw.slice(0, 240) + '...' : raw;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -91,37 +101,143 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   });
 }
 
+async function callGroqJson<T>(
+  groqKey: string,
+  prompt: string,
+  isSingleQuestion: boolean,
+  onProgress?: (msg: string) => void,
+): Promise<T> {
+  const groqModels = ['llama-3.3-70b-versatile', 'openai/gpt-oss-120b'];
+  const jsonContract = isSingleQuestion
+    ? `Return ONLY a valid JSON object matching this exact structure:
+{
+  "number": 1,
+  "type": "mcq|multiple_correct|assertion_reason|true_false|fill_blank|match_following|subjective",
+  "pyqTag": "string",
+  "stem": "string with $...$ LaTeX",
+  "options": [{"label":"A","text":"...","smiles":"optional"}],
+  "assertion": "optional string",
+  "reason": "optional string",
+  "matchColumns": {"leftHeader":"Column I","rightHeader":"Column II","leftItems":[{"key":"P","text":"..."}],"rightItems":[{"key":"1","text":"..."}]},
+  "diagram": {"kind":"none|svg|chemistry_smiles|chemistry_reaction","svgCode":"<svg viewBox='0 0 360 200' ...>","smiles":"optional","reaction":{"reactants":[],"reagentsAbove":"","reagentsBelow":"","products":[]},"caption":"optional"},
+  "correctAnswer": "string",
+  "solutionSteps": ["step 1", "step 2"]
+}`
+    : `Return ONLY a valid JSON object matching this exact structure:
+{
+  "title": "DPP Title",
+  "subtitle": "Subtitle",
+  "questions": [
+    {
+      "number": 1,
+      "type": "mcq|multiple_correct|assertion_reason|true_false|fill_blank|match_following|subjective",
+      "pyqTag": "string",
+      "stem": "string with $...$ LaTeX",
+      "options": [{"label":"A","text":"...","smiles":"optional"}],
+      "assertion": "optional string",
+      "reason": "optional string",
+      "matchColumns": {"leftHeader":"Column I","rightHeader":"Column II","leftItems":[{"key":"P","text":"..."}],"rightItems":[{"key":"1","text":"..."}]},
+      "diagram": {"kind":"none|svg|chemistry_smiles|chemistry_reaction","svgCode":"<svg viewBox='0 0 360 200' ...>","smiles":"optional","reaction":{"reactants":[],"reagentsAbove":"","reagentsBelow":"","products":[]},"caption":"optional"},
+      "correctAnswer": "string",
+      "solutionSteps": ["step 1", "step 2"]
+    }
+  ]
+}`;
+
+  let lastGroqErr: unknown;
+  for (const model of groqModels) {
+    try {
+      onProgress?.(`Generating with Groq (${model})...`);
+      const res = await withTimeout(
+        fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${groqKey}`,
+          },
+          body: JSON.stringify({
+            model,
+            temperature: 0.35,
+            response_format: { type: 'json_object' },
+            messages: [
+              {
+                role: 'system',
+                content: `You are a Principal Indian IIT-JEE / NEET / CBSE / ICSE Academic Paper-Setter. ${jsonContract}`,
+              },
+              { role: 'user', content: prompt },
+            ],
+          }),
+        }),
+        45000,
+        `groq:${model}`,
+      );
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Groq ${res.status}: ${errText.slice(0, 180)}`);
+      }
+      const data = (await res.json()) as {
+        choices?: { message?: { content?: string } }[];
+      };
+      const content = data.choices?.[0]?.message?.content?.trim();
+      if (!content) {
+        throw new Error('Empty JSON response from Groq.');
+      }
+      return JSON.parse(content) as T;
+    } catch (err) {
+      lastGroqErr = err;
+      console.warn(`Groq attempt (${model}) failed:`, err instanceof Error ? err.message : err);
+    }
+  }
+  throw lastGroqErr;
+}
+
 async function callGeminiWithRetry<T = any>(
-  ai: GoogleGenAI,
+  ai: GoogleGenAI | null,
   prompt: string,
   schema: Record<string, unknown>,
   onProgress?: (msg: string) => void,
   options?: {
     aiMode?: 'deep' | 'fast';
+    isSingleQuestion?: boolean;
     validate?: (parsed: T) => boolean;
   },
 ): Promise<T> {
+  const groqKey = getGroqApiKey();
+  if (!ai && !groqKey) {
+    throw new Error('No AI API key configured (GEMINI_API_KEY or GROQ_API_KEY).');
+  }
+
   const now = Date.now();
   const isDeep = options?.aiMode === 'deep';
   const attempts: { model: string; thinkingLevel?: ThinkingLevel; timeoutMs: number }[] = [];
 
-  if (isDeep && now > hydrogenCooldownUntil) {
-    attempts.push({
-      model: 'gemini-4-hydrogen',
-      thinkingLevel: ThinkingLevel.HIGH,
-      timeoutMs: 45000,
-    });
-  }
+  if (ai) {
+    if (isDeep && now > hydrogenCooldownUntil) {
+      attempts.push({
+        model: 'gemini-4-hydrogen',
+        thinkingLevel: ThinkingLevel.MEDIUM,
+        timeoutMs: 25000,
+      });
+    }
 
-  attempts.push({ model: 'gemini-3.1-flash-lite', timeoutMs: 55000 });
-  attempts.push({ model: 'gemini-3.1-flash-lite', timeoutMs: 55000 });
-
-  if (!isDeep && now > hydrogenCooldownUntil) {
     attempts.push({
-      model: 'gemini-4-hydrogen',
-      thinkingLevel: ThinkingLevel.LOW,
-      timeoutMs: 30000,
+      model: 'gemini-3.1-flash-lite',
+      thinkingLevel: isDeep ? ThinkingLevel.HIGH : undefined,
+      timeoutMs: 50000,
     });
+
+    if (!groqKey) {
+      attempts.push({ model: 'gemini-3.1-flash-lite', timeoutMs: 50000 });
+    }
+
+    if (!isDeep && now > hydrogenCooldownUntil && !groqKey) {
+      attempts.push({
+        model: 'gemini-4-hydrogen',
+        thinkingLevel: ThinkingLevel.LOW,
+        timeoutMs: 22000,
+      });
+    }
   }
 
   let lastError: unknown;
@@ -137,14 +253,14 @@ async function callGeminiWithRetry<T = any>(
       const config: Record<string, unknown> = {
         responseMimeType: 'application/json',
         responseSchema: schema,
-        temperature: isDeep ? 0.35 : 0.45,
       };
+      // Note: Gemini 4 models reject temperature/topP/topK — only attach thinkingConfig cleanly
       if (attempt.thinkingLevel) {
         config.thinkingConfig = { thinkingLevel: attempt.thinkingLevel };
       }
 
       const response = await withTimeout(
-        ai.models.generateContent({
+        ai!.models.generateContent({
           model: attempt.model,
           contents: prompt,
           config,
@@ -165,20 +281,56 @@ async function callGeminiWithRetry<T = any>(
     } catch (err) {
       lastError = err;
       const isQuota = isQuotaExhaustedError(err);
-      if (attempt.model === 'gemini-4-hydrogen' && isQuota) {
-        // Put gemini-4-hydrogen on 1-hour cooldown so we immediately use gemini-3.1-flash-lite
-        hydrogenCooldownUntil = Date.now() + 60 * 60 * 1000;
+      const is503 = isServiceUnavailableError(err);
+      if (attempt.model === 'gemini-4-hydrogen') {
+        if (isQuota) {
+          hydrogenCooldownUntil = Date.now() + 60 * 60 * 1000;
+        } else if (is503) {
+          // Put overloaded gemini-4-hydrogen on 10-minute cooldown so fast/next batches go straight to flash-lite or Groq
+          hydrogenCooldownUntil = Date.now() + 10 * 60 * 1000;
+        }
       }
       const reason = err instanceof Error ? err.message.slice(0, 140) : String(err);
       console.warn(`Gemini attempt ${i + 1} (${attempt.model}) failed: ${reason}`);
-      if ((!isRetryableError(err) && !/Empty JSON|Incomplete question/i.test(reason)) || i === attempts.length - 1) {
-        throw err;
+
+      // If Groq backup is available and Gemini failed with 503/429/timeout, fail over cleanly to Groq!
+      if (groqKey && (is503 || isQuota || /TIMEOUT|Empty JSON/i.test(reason))) {
+        try {
+          const groqParsed = await callGroqJson<T>(
+            groqKey,
+            prompt,
+            Boolean(options?.isSingleQuestion),
+            onProgress,
+          );
+          if (!options?.validate || options.validate(groqParsed)) {
+            return groqParsed;
+          }
+        } catch (groqErr) {
+          lastError = groqErr;
+        }
       }
-      // Longer backoff for free-tier RPM 429 on flash-lite to avoid tight retry loops
-      const delayMs = isQuota && attempt.model === 'gemini-3.1-flash-lite' ? 3500 : 1200;
+
+      if ((!isRetryableError(err) && !/Empty JSON|Incomplete question/i.test(reason)) || i === attempts.length - 1) {
+        break;
+      }
+      const delayMs = isQuota && attempt.model === 'gemini-3.1-flash-lite' ? 3500 : 1000;
       await sleep(delayMs);
     }
   }
+
+  // Final automatic Groq rescue if Gemini didn't succeed or GEMINI_API_KEY was absent
+  if (groqKey) {
+    const groqParsed = await callGroqJson<T>(
+      groqKey,
+      prompt,
+      Boolean(options?.isSingleQuestion),
+      onProgress,
+    );
+    if (!options?.validate || options.validate(groqParsed)) {
+      return groqParsed;
+    }
+  }
+
   throw lastError;
 }
 
@@ -428,7 +580,13 @@ ${body.customInstructions?.trim() ? `\nHIGH-PRIORITY TEACHER / ADMIN INSTRUCTION
 }
 
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok' });
+  res.json({
+    status: 'ok',
+    providers: {
+      gemini: Boolean(process.env.GEMINI_API_KEY?.trim()),
+      groq: Boolean(process.env.GROQ_API_KEY?.trim()),
+    },
+  });
 });
 
 app.post('/api/dpp/generate', async (req, res) => {
@@ -628,6 +786,7 @@ Verify algebra, units, and options internally. Use standard LaTeX ($...$ / $$...
 
     const parsed = await callGeminiWithRetry<Record<string, unknown>>(ai, prompt, questionSchema, undefined, {
       aiMode: aiMode === 'deep' ? 'deep' : 'fast',
+      isSingleQuestion: true,
       validate: (q) => Boolean(q && q.stem && q.correctAnswer),
     });
     return res.json({
