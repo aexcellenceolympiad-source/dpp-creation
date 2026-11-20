@@ -388,7 +388,13 @@ TARGET SPECIFICATION:
 - Board / Exam: ${boardOrExam} (${tierOrLevel})
 - Subject: ${body.subject}
 - Chapter: ${body.chapter}
-- Focused Topic: ${body.topic} (STRICT: 100% of questions MUST stay strictly on "${body.topic}" within "${body.chapter}". Zero off-topic drift!)
+- EXACT LOCKED TOPIC: "${body.topic}"
+
+MANDATORY EXACT-TOPIC LOCK (ZERO TOLERANCE FOR OFF-TOPIC DRIFT):
+- EVERY SINGLE QUESTION (Q${startNumber} to Q${startNumber + batchCount - 1}) MUST strictly and directly test ONLY "${body.topic}" within "${body.chapter}".
+- NEVER include questions from neighboring topics, other sub-topics of "${body.chapter}", or general chapter mixes.
+- Even if "${body.topic}" is a single narrow sub-topic, theorem, formula, or named reaction, keep 100% of questions locked directly onto "${body.topic}" by varying numerical setups, graphs/diagrams, edge cases, and question formats.
+
 - Language Medium: ${body.medium}${body.medium === 'Bilingual' ? ' (Write each question stem cleanly in English followed by its exact Hindi translation in Devanagari)' : body.medium === 'Hindi' ? ' (Write all stems, options, and solutions in pure academic Hindi Devanagari, keeping mathematical symbols/equations in LaTeX)' : ''}
 - Reference Calibration: ${body.referenceBooks.join(', ')}
 - Allowed Question Types (distribute cleanly across these selected types): ${body.questionTypes.join(', ')}
@@ -400,6 +406,7 @@ SELF-VERIFICATION & DISTRACTOR QUALITY PROTOCOL (MANDATORY BEFORE OUTPUT):
 1. Verify every single calculation, algebraic sign, boundary limit, dimensional unit, and chemical stoichiometry step-by-step internally BEFORE finalizing "correctAnswer" and "solutionSteps".
 2. Ensure zero ambiguity: for single-correct MCQ, EXACTLY ONE option among (A), (B), (C), (D) must equal the verified answer; the other 3 distractors must represent realistic student mistakes (e.g., sign flip, missing factor of 2, wrong directing group, boundary confusion) — never absurd or obvious throwaway options.
 3. For subjective/numerical proof questions, provide complete step-by-step mathematical derivations in solutionSteps using crisp LaTeX.
+4. TOPIC-LOCK AUDIT: Before emitting each question, confirm it directly tests "${body.topic}" — discard and replace any question that drifts onto another topic of "${body.chapter}".
 
 DIAGRAM & TYPESETTING RULES (INTERNATIONAL PUBLICATION STANDARD):
 1. MATH & EQUATIONS: Use standard LaTeX wrapped in $...$ (inline) or $$...$$ (display). For inorganic formulas/reactions, use $\\ce{...}$. Double-escape backslashes properly in JSON strings (e.g. "\\\\frac{1}{2}").
@@ -610,7 +617,7 @@ app.post('/api/dpp/regenerate-question', async (req, res) => {
 - Class ${metadata.classLevel} (${metadata.boardOrExam} / ${metadata.tierOrLevel})
 - Subject: ${metadata.subject}
 - Chapter: ${metadata.chapter}
-- Topic: ${metadata.topic}
+- EXACT LOCKED TOPIC (100% STRICT): "${metadata.topic}" (The regenerated question MUST strictly test ONLY "${metadata.topic}" — zero drift to any other topic!)
 - Medium: ${metadata.medium}
 - Reference Books: ${(metadata.referenceBooks || []).join(', ')}
 - Diagram Requirement: ${forceDiagram ? 'MUST include a clean diagram (either SMILES/reaction for organic chemistry or crisp <svg viewBox="0 0 360 200"> with stroke="currentColor" for Physics/Math/Biology).' : 'Include a diagram if conceptually helpful.'}

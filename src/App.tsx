@@ -79,7 +79,7 @@ export default function App() {
     }
   }, [styleConfig]);
 
-  const initialChapters = getChaptersForSelection('12', 'Physics');
+  const initialChapters = getChaptersForSelection('12', 'Physics', 'JEE Advanced');
 
   const [form, setForm] = useState<GenerateDppPayload>({
     classLevel: '12',
@@ -87,8 +87,8 @@ export default function App() {
     juniorTier: 'School Level',
     seniorExam: 'JEE Advanced',
     subject: 'Physics',
-    chapter: initialChapters[1]?.chapter || 'Laws of Motion & Friction',
-    topic: initialChapters[1]?.topics[0] || 'Constraint Relations & Wedge-Pulley Systems',
+    chapter: initialChapters[2]?.chapter || initialChapters[0]?.chapter || 'Current Electricity',
+    topic: initialChapters[2]?.topics[0] || initialChapters[0]?.topics[0] || 'Kirchhoff’s Laws (KCL/KVL), Cells & Grouping',
     questionCount: 10,
     questionTypes: ['mcq', 'match_following', 'assertion_reason', 'subjective'],
     diagramPercentage: 50,

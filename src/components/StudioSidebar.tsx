@@ -167,10 +167,13 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
   isGenerating,
 }) => {
   const isJunior = parseInt(form.classLevel, 10) <= 10;
+  const activeBoardOrExam = isJunior ? form.juniorBoard : form.seniorExam;
   const availableSubjects = isJunior ? JUNIOR_SUBJECTS : SENIOR_SUBJECTS;
-  const chapters = getChaptersForSelection(form.classLevel, form.subject);
+  const chapters = getChaptersForSelection(form.classLevel, form.subject, activeBoardOrExam);
   const matchedChapter = chapters.find((c) => c.chapter === form.chapter);
   const topics = matchedChapter ? matchedChapter.topics : [];
+  const isCustomTopic = topics.length === 0 || !topics.includes(form.topic);
+  const topicInputRef = React.useRef<HTMLInputElement>(null);
 
   const profileKey = isJunior ? form.juniorTier : form.seniorExam;
   const recommendedBooks = getRecommendedBooks(profileKey, form.subject);
@@ -180,7 +183,8 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
     const nextIsJunior = parseInt(cls, 10) <= 10;
     const nextSubjects = nextIsJunior ? JUNIOR_SUBJECTS : SENIOR_SUBJECTS;
     const nextSubject = nextSubjects.includes(form.subject) ? form.subject : nextSubjects[0];
-    const nextChapters = getChaptersForSelection(cls, nextSubject);
+    const nextBoardOrExam = nextIsJunior ? form.juniorBoard : form.seniorExam;
+    const nextChapters = getChaptersForSelection(cls, nextSubject, nextBoardOrExam);
     const nextChapter = nextChapters[0]?.chapter || form.chapter;
     const nextTopic = nextChapters[0]?.topics[0] || form.topic;
     const nextProfile = nextIsJunior ? form.juniorTier : form.seniorExam;
@@ -196,7 +200,7 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
   };
 
   const handleSubjectChange = (subject: string) => {
-    const nextChapters = getChaptersForSelection(form.classLevel, subject);
+    const nextChapters = getChaptersForSelection(form.classLevel, subject, activeBoardOrExam);
     const nextChapter = nextChapters[0]?.chapter || '';
     const nextTopic = nextChapters[0]?.topics[0] || '';
     onFormChange((prev) => ({
@@ -214,6 +218,37 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
       ...prev,
       chapter,
       topic: found?.topics[0] || '',
+    }));
+  };
+
+  const handleBoardChange = (nextBoard: JuniorBoard) => {
+    const nextChapters = getChaptersForSelection(form.classLevel, form.subject, nextBoard);
+    const sameChapter = nextChapters.find((c) => c.chapter === form.chapter);
+    onFormChange((prev) => ({
+      ...prev,
+      juniorBoard: nextBoard,
+      chapter: sameChapter ? sameChapter.chapter : nextChapters[0]?.chapter || prev.chapter,
+      topic: sameChapter
+        ? sameChapter.topics.includes(prev.topic)
+          ? prev.topic
+          : sameChapter.topics[0] || prev.topic
+        : nextChapters[0]?.topics[0] || prev.topic,
+    }));
+  };
+
+  const handleSeniorExamChange = (nextExam: SeniorExam) => {
+    const nextChapters = getChaptersForSelection(form.classLevel, form.subject, nextExam);
+    const sameChapter = nextChapters.find((c) => c.chapter === form.chapter);
+    onFormChange((prev) => ({
+      ...prev,
+      seniorExam: nextExam,
+      chapter: sameChapter ? sameChapter.chapter : nextChapters[0]?.chapter || prev.chapter,
+      topic: sameChapter
+        ? sameChapter.topics.includes(prev.topic)
+          ? prev.topic
+          : sameChapter.topics[0] || prev.topic
+        : nextChapters[0]?.topics[0] || prev.topic,
+      referenceBooks: getRecommendedBooks(nextExam, prev.subject).slice(0, 4),
     }));
   };
 
@@ -320,12 +355,7 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
                   </label>
                   <select
                     value={form.juniorBoard}
-                    onChange={(e) =>
-                      onFormChange((prev) => ({
-                        ...prev,
-                        juniorBoard: e.target.value as JuniorBoard,
-                      }))
-                    }
+                    onChange={(e) => handleBoardChange(e.target.value as JuniorBoard)}
                     className="w-full px-2.5 py-2 text-xs font-medium bg-white border border-slate-300 rounded-md text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
                   >
                     {JUNIOR_BOARDS.map((b) => (
@@ -366,14 +396,7 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
                 </label>
                 <select
                   value={form.seniorExam}
-                  onChange={(e) => {
-                    const nextExam = e.target.value as SeniorExam;
-                    onFormChange((prev) => ({
-                      ...prev,
-                      seniorExam: nextExam,
-                      referenceBooks: getRecommendedBooks(nextExam, form.subject).slice(0, 4),
-                    }));
-                  }}
+                  onChange={(e) => handleSeniorExamChange(e.target.value as SeniorExam)}
                   className="w-full px-2.5 py-2 text-xs font-medium bg-white border border-slate-300 rounded-md text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
                 >
                   {SENIOR_EXAMS.map((ex) => (
@@ -451,14 +474,39 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Focused Topic (Strictly On-Topic)
-                </label>
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <label className="text-xs font-semibold text-slate-700">
+                    Exact Topic (100% Locked)
+                  </label>
+                  {topics.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!isCustomTopic) {
+                          onFormChange((prev) => ({ ...prev, topic: '' }));
+                          setTimeout(() => topicInputRef.current?.focus(), 0);
+                        } else {
+                          onFormChange((prev) => ({ ...prev, topic: topics[0] }));
+                        }
+                      }}
+                      className={`px-2 py-0.5 text-[10.5px] font-semibold rounded border transition-colors ${
+                        isCustomTopic
+                          ? 'bg-blue-700 text-white border-blue-700'
+                          : 'bg-slate-100 text-slate-700 border-slate-200 hover:bg-slate-200'
+                      }`}
+                    >
+                      {isCustomTopic ? 'Use Syllabus List' : 'Write Custom Topic'}
+                    </button>
+                  )}
+                </div>
                 {topics.length > 0 && (
                   <select
                     value={topics.includes(form.topic) ? form.topic : '__custom__'}
                     onChange={(e) => {
-                      if (e.target.value !== '__custom__') {
+                      if (e.target.value === '__custom__') {
+                        onFormChange((prev) => ({ ...prev, topic: '' }));
+                        setTimeout(() => topicInputRef.current?.focus(), 0);
+                      } else {
                         onFormChange((prev) => ({ ...prev, topic: e.target.value }));
                       }
                     }}
@@ -469,16 +517,26 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
                         {t}
                       </option>
                     ))}
-                    <option value="__custom__">Custom Topic (Type below)</option>
+                    <option value="__custom__">Custom Topic (Khud Likhen Below)</option>
                   </select>
                 )}
                 <input
+                  ref={topicInputRef}
                   type="text"
                   value={form.topic}
                   onChange={(e) => onFormChange((prev) => ({ ...prev, topic: e.target.value }))}
-                  placeholder="Enter exact topic / micro-concept"
-                  className="w-full px-2.5 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-md text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-600"
+                  placeholder="Apna exact topic likhen (e.g., Aldol Condensation, King's Property, Gauss Law in Sphere)"
+                  className={`w-full px-2.5 py-2 text-xs rounded-md text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-600 ${
+                    isCustomTopic
+                      ? 'bg-amber-50/70 border border-amber-300 font-medium'
+                      : 'bg-slate-50 border border-slate-200'
+                  }`}
                 />
+                {form.topic.trim() && (
+                  <p className="mt-1 text-[10.5px] text-emerald-700 font-medium">
+                    Exact Topic Lock: 100% questions sirf &ldquo;{form.topic.trim()}&rdquo; par hi banenge.
+                  </p>
+                )}
               </div>
             </div>
 
