@@ -14,6 +14,7 @@ export type QuestionType =
   | 'subjective';
 
 export type LanguageMedium = 'English' | 'Hindi' | 'Bilingual';
+export type PaperType = 'dpp' | 'test';
 export type AiReasoningMode = 'deep' | 'fast';
 export type AiProviderPref = 'auto' | 'groq' | 'gemini';
 
@@ -157,6 +158,7 @@ export interface DppMetadata {
   topic: string;
   referenceBooks: string[];
   medium: LanguageMedium;
+  paperType?: PaperType;
 }
 
 export interface DppDocument {
@@ -252,4 +254,5 @@ export interface GenerateDppPayload {
   aiMode: AiReasoningMode;
   aiProvider?: AiProviderPref;
   customInstructions?: string;
+  paperType?: PaperType;
 }

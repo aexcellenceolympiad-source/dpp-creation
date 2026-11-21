@@ -5,6 +5,7 @@ import { STARTER_DPP } from './data/starterDpp';
 import { DppDocument, DppQuestion, DppStyleConfig, GenerateDppPayload, TextStyleConfig } from './types/dpp';
 import { StudioSidebar, SidebarTab } from './components/StudioSidebar';
 import { DppPaperView } from './components/DppPaperView';
+import { OfflineIndicator, PWAInstallButton } from './components/PWAInstallButton';
 
 const STYLE_STORAGE_KEY = 'safal_dpp_style_v1';
 const ACTIVE_DPP_STORAGE_KEY = 'safal_active_dpp_v1';
@@ -105,6 +106,7 @@ export default function App() {
     aiMode: 'fast',
     aiProvider: 'auto',
     customInstructions: '',
+    paperType: 'dpp',
   });
 
   const [providers, setProviders] = useState<{ gemini: boolean; groq: boolean }>({
@@ -375,9 +377,10 @@ export default function App() {
       }
       setDpp(finalDoc);
       setHistory((prev) => {
+        const docTag = finalDoc.metadata.paperType === 'test' ? 'Test' : 'DPP';
         const entry: SavedDppEntry = {
           id: `sheet-${Date.now()}`,
-          label: `Class ${finalDoc.metadata.classLevel} ${finalDoc.metadata.subject} · ${finalDoc.metadata.topic} (${finalDoc.questions.length} Qs)`,
+          label: `[${docTag}] Class ${finalDoc.metadata.classLevel} ${finalDoc.metadata.subject} · ${finalDoc.metadata.topic} (${finalDoc.questions.length} Qs)`,
           doc: finalDoc,
         };
         return [entry, ...prev].slice(0, 8);
@@ -499,7 +502,13 @@ export default function App() {
   const handleExportPdf = (targetMode: 'questions' | 'answers') => {
     setDocMode(targetMode);
     const prevTitle = document.title;
-    const suffix = targetMode === 'questions' ? 'Question-Paper' : 'Answer-Key-Solutions';
+    const isTest = dpp.metadata?.paperType === 'test';
+    const suffix =
+      targetMode === 'questions'
+        ? isTest
+          ? 'Test-Question-Paper'
+          : 'DPP-Question-Sheet'
+        : 'Answer-Key-Solutions';
     document.title = `${styleConfig.brandName.replace(/\s+/g, '-')}-${dpp.metadata.subject}-${suffix}`;
 
     // Wait one frame for mode switch if needed, then open print-to-PDF dialog
@@ -571,8 +580,9 @@ export default function App() {
           </button>
         </nav>
 
-        {/* Zone 3: Single Primary Action */}
-        <div className="shrink-0">
+        {/* Zone 3: Primary Actions */}
+        <div className="shrink-0 flex items-center gap-2.5">
+          <PWAInstallButton />
           <button
             type="button"
             onClick={() => handleExportPdf(docMode)}
@@ -796,7 +806,8 @@ export default function App() {
             <div className="no-print flex-1 flex flex-col items-center justify-center p-8 text-center">
               <div className="w-full max-w-2xl bg-white border border-slate-200 rounded-xl p-8 space-y-4">
                 <div className="text-sm font-semibold text-slate-900">
-                  Crafting {form.questionCount} PYQ-calibrated {form.subject} questions for Class{' '}
+                  Crafting {form.questionCount} PYQ-calibrated {form.subject}{' '}
+                  {form.paperType === 'test' ? 'Test Paper' : 'DPP'} questions for Class{' '}
                   {form.classLevel} ({parseInt(form.classLevel, 10) <= 10 ? `${form.juniorBoard} · ${form.juniorTier}` : form.seniorExam})...
                 </div>
                 <p className="text-xs text-slate-500">
@@ -826,6 +837,7 @@ export default function App() {
           )}
         </main>
       </div>
+      <OfflineIndicator />
     </div>
   );
 }

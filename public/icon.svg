@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0F172A" />
+      <stop offset="100%" stop-color="#1D4ED8" />
+    </linearGradient>
+    <linearGradient id="sheet" x1="120" y1="84" x2="392" y2="428" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFFFF" />
+      <stop offset="100%" stop-color="#F1F5F9" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="108" fill="url(#bg)" />
+  <rect x="122" y="82" width="268" height="348" rx="28" fill="url(#sheet)" />
+  <path d="M326 82H362C377.464 82 390 94.536 390 110V146L326 82Z" fill="#DBEAFE" />
+  <rect x="162" y="136" width="132" height="20" rx="10" fill="#1D4ED8" />
+  <rect x="162" y="176" width="188" height="12" rx="6" fill="#CBD5E1" />
+  <rect x="162" y="204" width="152" height="12" rx="6" fill="#CBD5E1" />
+  <!-- Crisp Sigma / Academic Badge -->
+  <path d="M294 252H174L236 312L174 372H296" stroke="#0F172A" stroke-width="24" stroke-linecap="round" stroke-linejoin="round" />
+  <circle cx="344" cy="340" r="44" fill="#10B981" />
+  <path d="M326 340L339 353L365 325" stroke="#FFFFFF" stroke-width="11" stroke-linecap="round" stroke-linejoin="round" />
+</svg>

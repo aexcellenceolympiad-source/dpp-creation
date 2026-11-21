@@ -73,6 +73,7 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
 
   const questions = Array.isArray(dpp?.questions) ? dpp.questions : [];
   const totalMarks = questions.reduce((sum, q) => sum + (q.marks || 0), 0);
+  const isTestPaper = dpp.metadata?.paperType === 'test';
   const isLandscape = styleConfig.orientation === 'landscape';
   const paperWidthMm = isLandscape ? 297 : 210;
   const paperMinHeightMm = isLandscape ? 210 : 297;
@@ -261,7 +262,9 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                     >
                       <span>
                         {mode === 'questions'
-                          ? 'DAILY PRACTICE PROBLEM (DPP)'
+                          ? isTestPaper
+                            ? 'TEST QUESTION PAPER'
+                            : 'DAILY PRACTICE PROBLEM (DPP)'
                           : 'ANSWER KEY & STEP-BY-STEP SOLUTIONS'}
                       </span>
                       <span aria-hidden="true">·</span>
@@ -303,6 +306,15 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                         <span>Max Marks: {totalMarks}</span>
                         <span>Time: {styleConfig.duration}</span>
                         <span>Date: {styleConfig.dateText}</span>
+                      </div>
+                    )}
+
+                    {isTestPaper && mode === 'questions' && (
+                      <div
+                        className="mt-2 text-[10.5px] italic opacity-85"
+                        style={{ color: styleConfig.headerMetaStyle.color }}
+                      >
+                        General Instructions: All questions are compulsory. Marks and negative marking (if any) are indicated against each question.
                       </div>
                     )}
                   </header>
@@ -802,8 +814,12 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
           >
             <span>{styleConfig.footerNote}</span>
             <span className="tabular-nums">
-              {mode === 'questions' ? 'Question Sheet' : 'Answer Key & Solutions'} ·{' '}
-              {styleConfig.brandName}
+              {mode === 'questions'
+                ? isTestPaper
+                  ? 'Test Question Paper'
+                  : 'DPP Question Sheet'
+                : 'Answer Key & Solutions'}{' '}
+              · {styleConfig.brandName}
             </span>
           </footer>
         </div>

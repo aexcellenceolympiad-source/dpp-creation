@@ -907,6 +907,7 @@ function buildPedagogicalPrompt(
     medium: string;
     referenceBooks: string[];
     customInstructions?: string;
+    paperType?: string;
   },
   batchCount: number,
   startNumber: number,
@@ -916,6 +917,7 @@ function buildPedagogicalPrompt(
   const boardOrExam = isJunior ? body.juniorBoard : body.seniorExam;
   const tierOrLevel = isJunior ? body.juniorTier : body.seniorExam;
   const targetDiagramCount = Math.round((batchCount * body.diagramPercentage) / 100);
+  const isTestPaper = body.paperType === 'test';
 
   let levelCalibration = '';
   if (isJunior) {
@@ -944,6 +946,7 @@ SPEC:
 - Medium: ${body.medium}${body.medium === 'Bilingual' ? ' (English stem + exact Hindi Devanagari translation below)' : body.medium === 'Hindi' ? ' (Academic Hindi Devanagari + LaTeX math)' : ''}
 - Books: ${body.referenceBooks.join(', ')}
 - Allowed Types (distribute cleanly): ${body.questionTypes.join(', ')}
+- Document Mode: ${isTestPaper ? 'Formal Exam TEST QUESTION PAPER (balanced warm-up to discriminating exam-hall difficulty progression, zero casual hints in stems, formal exam phrasing).' : 'DPP (Daily Practice Problem Sheet for focused topic mastery).'}
 - Diagrams: ${targetDiagramCount > 0 ? `Include clean diagrams for ~${targetDiagramCount}/${batchCount} Qs.` : `Set diagram.kind='none' for all Qs.`}
 ${batchFocus ? `- Batch Diversity Angle: ${batchFocus}` : ''}
 ${levelCalibration}
@@ -1056,8 +1059,11 @@ app.post('/api/dpp/generate', async (req, res) => {
       return collected;
     };
 
+    const isTestPaper = body.paperType === 'test';
     const buildPayload = () => ({
-      title: sheetTitle || `${body.subject} DPP — ${body.topic}`,
+      title:
+        sheetTitle ||
+        `${body.subject} ${isTestPaper ? 'Test Question Paper' : 'DPP'} — ${body.topic}`,
       subtitle:
         sheetSubtitle ||
         `Class ${body.classLevel} · ${isJunior ? `${body.juniorBoard} (${body.juniorTier})` : body.seniorExam}`,
@@ -1070,6 +1076,7 @@ app.post('/api/dpp/generate', async (req, res) => {
         topic: body.topic,
         referenceBooks: body.referenceBooks || [],
         medium: body.medium || 'English',
+        paperType: isTestPaper ? 'test' : 'dpp',
       },
       questions: collectOrderedQuestions(),
     });

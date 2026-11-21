@@ -21,6 +21,7 @@ import {
   JuniorTier,
   LanguageMedium,
   PaperFontFamily,
+  PaperType,
   QuestionType,
   SeniorExam,
   TextStyleConfig,
@@ -326,6 +327,33 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
         {/* TAB 1: CURRICULUM & PYQ ENGINE */}
         {activeTab === 'curriculum' && (
           <>
+            {/* Document Mode: DPP vs Test / Question Paper */}
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Document Mode (DPP / Test Paper)
+              </label>
+              <select
+                value={form.paperType || 'dpp'}
+                onChange={(e) => {
+                  const nextType = e.target.value as PaperType;
+                  onFormChange((prev) => ({ ...prev, paperType: nextType }));
+                  onStyleChange((prev) => {
+                    if (nextType === 'test' && (prev.testCode === 'DPP-01' || !prev.testCode.trim())) {
+                      return { ...prev, testCode: 'TEST-01', duration: prev.duration === '45 Mins' ? '60 Mins' : prev.duration };
+                    }
+                    if (nextType === 'dpp' && prev.testCode === 'TEST-01') {
+                      return { ...prev, testCode: 'DPP-01', duration: prev.duration === '60 Mins' ? '45 Mins' : prev.duration };
+                    }
+                    return prev;
+                  });
+                }}
+                className="w-full px-2.5 py-2 text-xs font-semibold bg-white border border-slate-300 rounded-md text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
+              >
+                <option value="dpp">DPP (Daily Practice Problem Sheet)</option>
+                <option value="test">Test / Question Paper (Exam Mode)</option>
+              </select>
+            </div>
+
             {/* Class Selector */}
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1.5">
@@ -1373,7 +1401,15 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
           className="flex-1 py-2.5 px-4 inline-flex items-center justify-center gap-2 text-sm font-semibold text-white bg-blue-700 hover:bg-blue-800 disabled:bg-slate-400 rounded-lg transition-colors shadow-xs cursor-pointer"
         >
           <Sparkles className={`w-4 h-4 ${isGenerating ? 'animate-spin' : ''}`} />
-          <span>{isGenerating ? 'Generating PYQ DPP & Solutions...' : 'Generate DPP & Answer Key'}</span>
+          <span>
+            {isGenerating
+              ? form.paperType === 'test'
+                ? 'Generating Test Paper & Solutions...'
+                : 'Generating PYQ DPP & Solutions...'
+              : form.paperType === 'test'
+                ? 'Generate Test Paper & Answer Key'
+                : 'Generate DPP & Answer Key'}
+          </span>
         </button>
         {isGenerating && onCancelGenerate && (
           <button
