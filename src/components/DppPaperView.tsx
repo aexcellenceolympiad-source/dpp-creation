@@ -614,7 +614,10 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                               q.type !== 'fill_blank' && (
                                 <div
                                   className={`mt-2.5 grid gap-x-4 gap-y-1.5 ${
-                                    q.options.some((o) => o.smiles || (o.text || '').length > 42)
+                                    q.options.some((o) => {
+                                      const t = o.text || '';
+                                      return o.smiles || t.length > 22 || /[=\\]frac|\\sqrt/.test(t);
+                                    })
                                       ? 'grid-cols-1 sm:grid-cols-2'
                                       : 'grid-cols-2 sm:grid-cols-4'
                                   }`}

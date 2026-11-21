@@ -24,11 +24,96 @@ export interface ReactionScheme {
   products: string[]; // SMILES strings
 }
 
+export interface MathPlotSpec {
+  xMin?: number;
+  xMax?: number;
+  yMin?: number;
+  yMax?: number;
+  showGrid?: boolean;
+  functions?: {
+    expr: string;
+    label?: string;
+    dashed?: boolean;
+  }[];
+  lines?: {
+    a?: number; // ax + by + c = 0
+    b?: number;
+    c?: number;
+    x1?: number;
+    y1?: number;
+    x2?: number;
+    y2?: number;
+    label?: string;
+    dashed?: boolean;
+  }[];
+  circles?: {
+    cx: number;
+    cy: number;
+    r: number;
+    label?: string;
+    dashed?: boolean;
+  }[];
+  points?: {
+    x: number;
+    y: number;
+    label?: string;
+    open?: boolean;
+  }[];
+  shade?: {
+    exprTop: string;
+    exprBottom?: string; // defaults to 0 (x-axis)
+    from: number;
+    to: number;
+  };
+}
+
+export interface GeometrySpec {
+  vertices: { id: string; x: number; y: number; label?: string }[];
+  segments?: { from: string; to: string; label?: string; dashed?: boolean }[];
+  circles?: { cx: number; cy: number; r: number; label?: string }[];
+  angleArcs?: { vertex: string; p1: string; p2: string; label?: string; rightAngle?: boolean }[];
+}
+
+export interface PhysicsDiagramSpec {
+  preset: 'incline_block' | 'pulley_two_mass' | 'circuit_loop' | 'ray_optics' | 'projectile' | 'fbd_block';
+  angleDeg?: number;
+  mass1?: string;
+  mass2?: string;
+  hasPulley?: boolean;
+  forces?: { dir: 'up' | 'down' | 'left' | 'right' | 'up_incline' | 'down_incline' | 'normal'; label: string }[];
+  // Circuit fields
+  topComponent?: string;
+  bottomComponent?: string;
+  leftComponent?: string;
+  rightComponent?: string;
+  emfLabel?: string;
+  currentLabel?: string;
+  // Ray optics fields
+  opticsType?: 'convex_lens' | 'concave_lens' | 'concave_mirror' | 'convex_mirror';
+  objectDistLabel?: string;
+  focalLabel?: string;
+  objectBeyond2F?: boolean;
+  // Projectile fields
+  velocityLabel?: string;
+  rangeLabel?: string;
+  heightLabel?: string;
+}
+
 export interface DiagramData {
-  kind: 'none' | 'svg' | 'chemistry_smiles' | 'chemistry_reaction';
+  kind:
+    | 'none'
+    | 'svg'
+    | 'chemistry_smiles'
+    | 'chemistry_reaction'
+    | 'math_plot'
+    | 'geometry'
+    | 'physics_diagram';
   svgCode?: string;
   smiles?: string;
   reaction?: ReactionScheme;
+  mathPlot?: MathPlotSpec;
+  geometry?: GeometrySpec;
+  physics?: PhysicsDiagramSpec;
   caption?: string;
 }
 

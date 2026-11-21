@@ -171,6 +171,15 @@ function extractJsonText(raw: string): string {
   return trimmed;
 }
 
+function cleanLatexText(val: unknown): string {
+  if (val == null) return '';
+  return String(val)
+    .replace(/\t(?=(?:heta|imes|ext|an|au|riangle|frac|binom|o\b))/g, '\\t')
+    .replace(/\f(?=(?:rac|orall|lat))/g, '\\f')
+    .replace(/\r(?=(?:ho|ight|eg|angle))/g, '\\r')
+    .replace(/\x08(?=(?:eta|ar|inom|egin|ig|ullet|ecause))/g, '\\b');
+}
+
 function normalizeQuestion(
   raw: Record<string, unknown>,
   number: number,
@@ -195,7 +204,7 @@ function normalizeQuestion(
               typeof o.label === 'string' && o.label.trim()
                 ? o.label.trim()
                 : String.fromCharCode(65 + idx),
-            text: o.text == null ? '' : String(o.text),
+            text: cleanLatexText(o.text),
             ...(typeof o.smiles === 'string' && o.smiles.trim() ? { smiles: o.smiles.trim() } : {}),
           }));
 
@@ -207,7 +216,7 @@ function normalizeQuestion(
           .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
           .map((item, idx) => ({
             key: typeof item.key === 'string' && item.key.trim() ? item.key.trim() : ['P', 'Q', 'R', 'S'][idx] || String(idx + 1),
-            text: item.text == null ? '' : String(item.text),
+            text: cleanLatexText(item.text),
           }))
       : [];
     const rightItems = Array.isArray(mc.rightItems)
@@ -215,7 +224,7 @@ function normalizeQuestion(
           .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
           .map((item, idx) => ({
             key: typeof item.key === 'string' && item.key.trim() ? item.key.trim() : String(idx + 1),
-            text: item.text == null ? '' : String(item.text),
+            text: cleanLatexText(item.text),
           }))
       : [];
     if (leftItems.length > 0 || rightItems.length > 0) {
@@ -232,17 +241,28 @@ function normalizeQuestion(
   if (raw.diagram && typeof raw.diagram === 'object') {
     const d = raw.diagram as Record<string, unknown>;
     const kind = typeof d.kind === 'string' ? d.kind.trim() : 'none';
-    if (kind === 'svg' && typeof d.svgCode === 'string' && d.svgCode.includes('<svg')) {
+    const captionProp =
+      typeof d.caption === 'string' && d.caption.trim()
+        ? { caption: cleanLatexText(d.caption.trim()) }
+        : {};
+
+    if (kind === 'math_plot' && d.mathPlot && typeof d.mathPlot === 'object') {
+      diagram = { kind: 'math_plot', mathPlot: d.mathPlot, ...captionProp };
+    } else if (kind === 'geometry' && d.geometry && typeof d.geometry === 'object') {
+      diagram = { kind: 'geometry', geometry: d.geometry, ...captionProp };
+    } else if (kind === 'physics_diagram' && d.physics && typeof d.physics === 'object') {
+      diagram = { kind: 'physics_diagram', physics: d.physics, ...captionProp };
+    } else if (kind === 'svg' && typeof d.svgCode === 'string' && d.svgCode.includes('<svg')) {
       diagram = {
         kind: 'svg',
         svgCode: d.svgCode,
-        ...(typeof d.caption === 'string' && d.caption.trim() ? { caption: d.caption.trim() } : {}),
+        ...captionProp,
       };
     } else if (kind === 'chemistry_smiles' && typeof d.smiles === 'string' && d.smiles.trim()) {
       diagram = {
         kind: 'chemistry_smiles',
         smiles: d.smiles.trim(),
-        ...(typeof d.caption === 'string' && d.caption.trim() ? { caption: d.caption.trim() } : {}),
+        ...captionProp,
       };
     } else if (kind === 'chemistry_reaction' && d.reaction && typeof d.reaction === 'object') {
       const rx = d.reaction as Record<string, unknown>;
@@ -257,20 +277,20 @@ function normalizeQuestion(
           kind: 'chemistry_reaction',
           reaction: {
             reactants,
-            reagentsAbove: typeof rx.reagentsAbove === 'string' ? rx.reagentsAbove : '',
-            reagentsBelow: typeof rx.reagentsBelow === 'string' ? rx.reagentsBelow : '',
+            reagentsAbove: typeof rx.reagentsAbove === 'string' ? cleanLatexText(rx.reagentsAbove) : '',
+            reagentsBelow: typeof rx.reagentsBelow === 'string' ? cleanLatexText(rx.reagentsBelow) : '',
             products,
           },
-          ...(typeof d.caption === 'string' && d.caption.trim() ? { caption: d.caption.trim() } : {}),
+          ...captionProp,
         };
       }
     }
   }
 
   const solutionSteps = Array.isArray(raw.solutionSteps)
-    ? raw.solutionSteps.map((s) => (s == null ? '' : String(s))).filter((s) => s.trim().length > 0)
+    ? raw.solutionSteps.map((s) => cleanLatexText(s)).filter((s) => s.trim().length > 0)
     : typeof raw.solutionSteps === 'string' && raw.solutionSteps.trim()
-      ? [raw.solutionSteps.trim()]
+      ? [cleanLatexText(raw.solutionSteps.trim())]
       : [];
 
   return {
@@ -281,13 +301,17 @@ function normalizeQuestion(
     negativeMarks:
       type === 'mcq' || type === 'multiple_correct' || type === 'assertion_reason' ? neg : 0,
     ...(typeof raw.pyqTag === 'string' && raw.pyqTag.trim() ? { pyqTag: raw.pyqTag.trim() } : {}),
-    stem: raw.stem == null ? '' : String(raw.stem),
+    stem: cleanLatexText(raw.stem),
     ...(options.length > 0 ? { options } : {}),
-    ...(type === 'assertion_reason' && typeof raw.assertion === 'string' ? { assertion: raw.assertion } : {}),
-    ...(type === 'assertion_reason' && typeof raw.reason === 'string' ? { reason: raw.reason } : {}),
+    ...(type === 'assertion_reason' && typeof raw.assertion === 'string'
+      ? { assertion: cleanLatexText(raw.assertion) }
+      : {}),
+    ...(type === 'assertion_reason' && typeof raw.reason === 'string'
+      ? { reason: cleanLatexText(raw.reason) }
+      : {}),
     ...(matchColumns ? { matchColumns } : {}),
     diagram,
-    correctAnswer: raw.correctAnswer == null ? '' : String(raw.correctAnswer),
+    correctAnswer: cleanLatexText(raw.correctAnswer),
     solutionSteps:
       solutionSteps.length > 0 ? solutionSteps : ['Apply the standard concept and verify values.'],
   };
@@ -303,8 +327,10 @@ async function callGroqJson<T>(
   const now = Date.now();
   const groqModels =
     now < groqPrimaryCooldownUntil
-      ? ['llama-3.1-8b-instant', 'llama-3.3-70b-versatile']
-      : ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'];
+      ? ['openai/gpt-oss-120b', 'llama-3.1-8b-instant', 'llama-3.3-70b-versatile']
+      : ['llama-3.3-70b-versatile', 'openai/gpt-oss-120b', 'llama-3.1-8b-instant'];
+
+  const diagramExample = `{"kind":"none|math_plot|geometry|physics_diagram|chemistry_smiles|chemistry_reaction|svg","mathPlot":{"xMin":-5,"xMax":5,"yMin":-5,"yMax":5,"functions":[{"expr":"x^2-2*x","label":"y=x^2-2x"}],"lines":[{"a":1,"b":-1,"c":0,"label":"y=x"}],"points":[{"x":0,"y":0,"label":"O"}]},"geometry":{"vertices":[{"id":"A","x":0,"y":0,"label":"A"},{"id":"B","x":4,"y":0,"label":"B"},{"id":"C","x":2,"y":3,"label":"C"}],"segments":[{"from":"A","to":"B"},{"from":"B","to":"C"},{"from":"C","to":"A"}]},"physics":{"preset":"incline_block|pulley_two_mass|circuit_loop|ray_optics|projectile|fbd_block","angleDeg":30,"mass1":"m1"},"smiles":"c1ccccc1","reaction":{"reactants":["c1ccccc1"],"reagentsAbove":"HNO3 / H2SO4","products":["O=[N+]([O-])c1ccccc1"]},"svgCode":"<svg viewBox='0 0 360 190' ...>","caption":"optional"}`;
 
   const jsonContract = isSingleQuestion
     ? `Return ONLY a valid JSON object matching this exact structure:
@@ -312,12 +338,12 @@ async function callGroqJson<T>(
   "number": 1,
   "type": "mcq|multiple_correct|assertion_reason|true_false|fill_blank|match_following|subjective",
   "pyqTag": "string",
-  "stem": "string with $...$ LaTeX",
-  "options": [{"label":"A","text":"...","smiles":"optional"}],
+  "stem": "string with EVERY math/angle wrapped in $...$ LaTeX",
+  "options": [{"label":"A","text":"$30^\\\\circ$","smiles":"optional"}],
   "assertion": "optional string",
   "reason": "optional string",
   "matchColumns": {"leftHeader":"Column I","rightHeader":"Column II","leftItems":[{"key":"P","text":"..."}],"rightItems":[{"key":"1","text":"..."}]},
-  "diagram": {"kind":"none|svg|chemistry_smiles|chemistry_reaction","svgCode":"<svg viewBox='0 0 360 190' ...>","smiles":"optional","reaction":{"reactants":[],"reagentsAbove":"","reagentsBelow":"","products":[]},"caption":"optional"},
+  "diagram": ${diagramExample},
   "correctAnswer": "string",
   "solutionSteps": ["step 1", "step 2"]
 }`
@@ -330,12 +356,12 @@ async function callGroqJson<T>(
       "number": 1,
       "type": "mcq|multiple_correct|assertion_reason|true_false|fill_blank|match_following|subjective",
       "pyqTag": "string",
-      "stem": "string with $...$ LaTeX",
-      "options": [{"label":"A","text":"...","smiles":"optional"}],
+      "stem": "string with EVERY math/angle wrapped in $...$ LaTeX",
+      "options": [{"label":"A","text":"$30^\\\\circ$","smiles":"optional"}],
       "assertion": "optional string",
       "reason": "optional string",
       "matchColumns": {"leftHeader":"Column I","rightHeader":"Column II","leftItems":[{"key":"P","text":"..."}],"rightItems":[{"key":"1","text":"..."}]},
-      "diagram": {"kind":"none|svg|chemistry_smiles|chemistry_reaction","svgCode":"<svg viewBox='0 0 360 190' ...>","smiles":"optional","reaction":{"reactants":[],"reagentsAbove":"","reagentsBelow":"","products":[]},"caption":"optional"},
+      "diagram": ${diagramExample},
       "correctAnswer": "string",
       "solutionSteps": ["step 1", "step 2"]
     }
@@ -593,17 +619,178 @@ const diagramSchema = {
     kind: {
       type: Type.STRING,
       description:
-        "Diagram kind: 'none', 'svg', 'chemistry_smiles', or 'chemistry_reaction'.",
+        "Diagram kind: 'none', 'math_plot', 'geometry', 'physics_diagram', 'chemistry_smiles', 'chemistry_reaction', or 'svg'. Prefer parametric math_plot/geometry/physics_diagram/chemistry_* over raw svg.",
+    },
+    mathPlot: {
+      type: Type.OBJECT,
+      properties: {
+        xMin: { type: Type.NUMBER },
+        xMax: { type: Type.NUMBER },
+        yMin: { type: Type.NUMBER },
+        yMax: { type: Type.NUMBER },
+        showGrid: { type: Type.BOOLEAN },
+        functions: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              expr: { type: Type.STRING, description: "JS/math expression in x like 'x^2 - 4*x + 3', 'sin(2*x)', 'sqrt(x)'." },
+              label: { type: Type.STRING },
+              dashed: { type: Type.BOOLEAN },
+            },
+            required: ['expr'],
+          },
+        },
+        lines: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              a: { type: Type.NUMBER },
+              b: { type: Type.NUMBER },
+              c: { type: Type.NUMBER },
+              x1: { type: Type.NUMBER },
+              y1: { type: Type.NUMBER },
+              x2: { type: Type.NUMBER },
+              y2: { type: Type.NUMBER },
+              label: { type: Type.STRING },
+              dashed: { type: Type.BOOLEAN },
+            },
+          },
+        },
+        circles: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              cx: { type: Type.NUMBER },
+              cy: { type: Type.NUMBER },
+              r: { type: Type.NUMBER },
+              label: { type: Type.STRING },
+              dashed: { type: Type.BOOLEAN },
+            },
+            required: ['cx', 'cy', 'r'],
+          },
+        },
+        points: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              x: { type: Type.NUMBER },
+              y: { type: Type.NUMBER },
+              label: { type: Type.STRING },
+              open: { type: Type.BOOLEAN },
+            },
+            required: ['x', 'y'],
+          },
+        },
+        shade: {
+          type: Type.OBJECT,
+          properties: {
+            exprTop: { type: Type.STRING },
+            exprBottom: { type: Type.STRING },
+            from: { type: Type.NUMBER },
+            to: { type: Type.NUMBER },
+          },
+          required: ['exprTop', 'from', 'to'],
+        },
+      },
+    },
+    geometry: {
+      type: Type.OBJECT,
+      properties: {
+        vertices: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              id: { type: Type.STRING },
+              x: { type: Type.NUMBER },
+              y: { type: Type.NUMBER },
+              label: { type: Type.STRING },
+            },
+            required: ['id', 'x', 'y'],
+          },
+        },
+        segments: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              from: { type: Type.STRING },
+              to: { type: Type.STRING },
+              label: { type: Type.STRING },
+              dashed: { type: Type.BOOLEAN },
+            },
+            required: ['from', 'to'],
+          },
+        },
+        circles: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              cx: { type: Type.NUMBER },
+              cy: { type: Type.NUMBER },
+              r: { type: Type.NUMBER },
+              label: { type: Type.STRING },
+            },
+            required: ['cx', 'cy', 'r'],
+          },
+        },
+        angleArcs: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              vertex: { type: Type.STRING },
+              p1: { type: Type.STRING },
+              p2: { type: Type.STRING },
+              label: { type: Type.STRING },
+              rightAngle: { type: Type.BOOLEAN },
+            },
+            required: ['vertex', 'p1', 'p2'],
+          },
+        },
+      },
+      required: ['vertices'],
+    },
+    physics: {
+      type: Type.OBJECT,
+      properties: {
+        preset: {
+          type: Type.STRING,
+          description: "One of: 'incline_block', 'pulley_two_mass', 'circuit_loop', 'ray_optics', 'projectile', 'fbd_block'.",
+        },
+        angleDeg: { type: Type.NUMBER },
+        mass1: { type: Type.STRING },
+        mass2: { type: Type.STRING },
+        hasPulley: { type: Type.BOOLEAN },
+        topComponent: { type: Type.STRING },
+        bottomComponent: { type: Type.STRING },
+        leftComponent: { type: Type.STRING },
+        rightComponent: { type: Type.STRING },
+        emfLabel: { type: Type.STRING },
+        currentLabel: { type: Type.STRING },
+        opticsType: { type: Type.STRING },
+        objectDistLabel: { type: Type.STRING },
+        focalLabel: { type: Type.STRING },
+        velocityLabel: { type: Type.STRING },
+        rangeLabel: { type: Type.STRING },
+        heightLabel: { type: Type.STRING },
+      },
+      required: ['preset'],
     },
     svgCode: {
       type: Type.STRING,
       description:
-        "Compact self-contained <svg viewBox='0 0 360 190' ...> using stroke='currentColor' and fill='none'. Required only when kind='svg'.",
+        "Compact self-contained <svg viewBox='0 0 360 190' ...> using stroke='currentColor' and fill='none'. Use only for Biology or diagrams not covered by math_plot/geometry/physics_diagram/chemistry_*.",
     },
     smiles: {
       type: Type.STRING,
       description:
-        "Valid canonical SMILES string. Required only when kind='chemistry_smiles'.",
+        "Valid canonical SMILES string (e.g. 'c1ccccc1' for benzene, 'O=[N+]([O-])c1ccccc1' for nitrobenzene). Required when kind='chemistry_smiles'.",
     },
     reaction: {
       type: Type.OBJECT,
@@ -761,12 +948,15 @@ SPEC:
 ${batchFocus ? `- Batch Diversity Angle: ${batchFocus}` : ''}
 ${levelCalibration}
 
-QUALITY & SPEED RULES:
+QUALITY, LATEX & DIAGRAM SPEED RULES:
 1. Verify algebra, units, signs, and stoichiometry before finalizing "correctAnswer" & "solutionSteps". Single-correct MCQ must have 1 exact answer + 3 realistic distractors.
-2. Keep "solutionSteps" crisp and high-yield (2–4 clear steps with $...$ LaTeX / $\\ce{...}$). Double-escape JSON backslashes (e.g. "\\\\frac{1}{2}").
-3. Organic Chemistry diagrams: use diagram.kind='chemistry_smiles' (valid SMILES) or 'chemistry_reaction'.
-4. Physics/Math/Bio diagrams: use diagram.kind='svg' with compact <svg viewBox="0 0 360 190" xmlns="http://www.w3.org/2000/svg"> (stroke="currentColor" fill="none", clean primitives & non-overlapping labels).
-5. Type format: 'assertion_reason' -> assertion, reason, 4 options A-D; 'match_following' -> matchColumns (P,Q,R,S & 1,2,3,4) + 4 options A-D; 'true_false' -> options A: True, B: False; 'fill_blank' -> "________" in stem; 'subjective' -> empty options.
+2. STRICT LATEX WRAPPING: Wrap EVERY math expression, variable, equation, degree/angle, and chemical formula in $...$ (e.g., "$30^\\\\circ$", "$\\\\frac{1}{2}$", "$\\\\ce{H2SO4}$"). NEVER write bare "30^\\circ" or "\\frac{1}{2}" outside $...$. Double-escape JSON backslashes properly. Keep "solutionSteps" crisp (2–4 steps).
+3. FAST ZERO-ERROR DIAGRAMS (Prefer structured engines over raw SVG):
+   - Organic Chemistry (benzene, substituted aromatics, mechanisms): use diagram.kind='chemistry_smiles' (valid SMILES like "c1ccccc1") or 'chemistry_reaction'.
+   - Maths Graphs (lines, parabolas, trig, circles, shaded integrals): use diagram.kind='math_plot' with exact mathPlot bounds, functions/lines/circles/points/shade.
+   - Euclidean/Coordinate Geometry (triangles, chords, tangents, angles): use diagram.kind='geometry' with exact vertices, segments, circles, angleArcs.
+   - Physics Mechanics/Circuits/Optics/Projectiles: use diagram.kind='physics_diagram' with preset ('incline_block', 'pulley_two_mass', 'circuit_loop', 'ray_optics', 'projectile', 'fbd_block'), OR 'svg' only for custom setups/Biology.
+4. Type format: 'assertion_reason' -> assertion, reason, 4 options A-D; 'match_following' -> matchColumns (P,Q,R,S & 1,2,3,4) + 4 options A-D; 'true_false' -> options A: True, B: False; 'fill_blank' -> "________" in stem; 'subjective' -> empty options.
 ${body.customInstructions?.trim() ? `\nTEACHER INSTRUCTIONS (STRICT):\n${body.customInstructions.trim()}` : ''}`;
 }
 
