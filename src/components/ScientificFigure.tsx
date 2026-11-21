@@ -26,11 +26,22 @@ export const ScientificFigure: React.FC<ScientificFigureProps> = ({
   figureScale,
 }) => {
   const sanitizedSvg = useMemo(() => {
-    if (!diagram || diagram.kind !== 'svg' || !diagram.svgCode) return '';
+    if (!diagram || diagram.kind !== 'svg' || typeof diagram.svgCode !== 'string') return '';
     return sanitizeSvg(diagram.svgCode);
   }, [diagram]);
 
   if (!diagram || diagram.kind === 'none') return null;
+
+  const hasValidSvg = diagram.kind === 'svg' && sanitizedSvg.includes('<svg');
+  const hasValidSmiles =
+    diagram.kind === 'chemistry_smiles' && typeof diagram.smiles === 'string' && diagram.smiles.trim().length > 0;
+  const hasValidReaction =
+    diagram.kind === 'chemistry_reaction' &&
+    Boolean(diagram.reaction) &&
+    ((Array.isArray(diagram.reaction?.reactants) && diagram.reaction.reactants.length > 0) ||
+      (Array.isArray(diagram.reaction?.products) && diagram.reaction.products.length > 0));
+
+  if (!hasValidSvg && !hasValidSmiles && !hasValidReaction) return null;
 
   const scaleFactor = Math.max(0.7, Math.min(1.3, figureScale / 100));
 

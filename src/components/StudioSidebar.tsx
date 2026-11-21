@@ -12,6 +12,7 @@ import {
   getRecommendedBooks,
 } from '../data/curriculum';
 import {
+  AiProviderPref,
   BorderStyleType,
   ClassLevel,
   DppStyleConfig,
@@ -38,6 +39,7 @@ interface StudioSidebarProps {
   onGenerate: () => void;
   onCancelGenerate?: () => void;
   isGenerating: boolean;
+  providers?: { gemini: boolean; groq: boolean };
 }
 
 interface TextStyleControlProps {
@@ -165,6 +167,7 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
   onGenerate,
   onCancelGenerate,
   isGenerating,
+  providers,
 }) => {
   const isJunior = parseInt(form.classLevel, 10) <= 10;
   const activeBoardOrExam = isJunior ? form.juniorBoard : form.seniorExam;
@@ -185,8 +188,8 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
     const nextSubject = nextSubjects.includes(form.subject) ? form.subject : nextSubjects[0];
     const nextBoardOrExam = nextIsJunior ? form.juniorBoard : form.seniorExam;
     const nextChapters = getChaptersForSelection(cls, nextSubject, nextBoardOrExam);
-    const nextChapter = nextChapters[0]?.chapter || form.chapter;
-    const nextTopic = nextChapters[0]?.topics[0] || form.topic;
+    const nextChapter = nextChapters[0]?.chapter || '';
+    const nextTopic = nextChapters[0]?.topics[0] || '';
     const nextProfile = nextIsJunior ? form.juniorTier : form.seniorExam;
 
     onFormChange((prev) => ({
@@ -585,31 +588,58 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
                   </button>
                 ))}
               </div>
-              <div className="pt-1 border-t border-blue-200/70 flex items-center justify-between gap-2">
-                <span className="text-[11px] font-semibold text-slate-700">AI Brain Mode</span>
-                <div className="grid grid-cols-2 gap-1 p-0.5 bg-white border border-blue-200 rounded-md">
-                  <button
-                    type="button"
-                    onClick={() => onFormChange((prev) => ({ ...prev, aiMode: 'fast' }))}
-                    className={`px-2 py-1 text-[10.5px] font-semibold rounded transition-colors ${
-                      form.aiMode !== 'deep'
-                        ? 'bg-blue-700 text-white'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    Fast (Free-Tier)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onFormChange((prev) => ({ ...prev, aiMode: 'deep' }))}
-                    className={`px-2 py-1 text-[10.5px] font-semibold rounded transition-colors ${
-                      form.aiMode === 'deep'
-                        ? 'bg-slate-900 text-white'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    Deep Reasoning
-                  </button>
+              <div className="pt-1 border-t border-blue-200/70 space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-semibold text-slate-700">AI Brain Mode</span>
+                  <div className="grid grid-cols-2 gap-1 p-0.5 bg-white border border-blue-200 rounded-md">
+                    <button
+                      type="button"
+                      onClick={() => onFormChange((prev) => ({ ...prev, aiMode: 'fast' }))}
+                      className={`px-2 py-1 text-[10.5px] font-semibold rounded transition-colors ${
+                        form.aiMode !== 'deep'
+                          ? 'bg-blue-700 text-white'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Fast (Free-Tier)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onFormChange((prev) => ({ ...prev, aiMode: 'deep' }))}
+                      className={`px-2 py-1 text-[10.5px] font-semibold rounded transition-colors ${
+                        form.aiMode === 'deep'
+                          ? 'bg-slate-900 text-white'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Deep Reasoning
+                    </button>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-semibold text-slate-700">AI Speed Engine</span>
+                  <div className="grid grid-cols-3 gap-1 p-0.5 bg-white border border-blue-200 rounded-md">
+                    {(
+                      [
+                        { value: 'auto', label: 'Auto (Fast)' },
+                        { value: 'groq', label: providers?.groq ? 'Groq Turbo' : 'Groq' },
+                        { value: 'gemini', label: 'Gemini' },
+                      ] as { value: AiProviderPref; label: string }[]
+                    ).map((opt) => (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        onClick={() => onFormChange((prev) => ({ ...prev, aiProvider: opt.value }))}
+                        className={`px-2 py-1 text-[10.5px] font-semibold rounded transition-colors whitespace-nowrap ${
+                          (form.aiProvider || 'auto') === opt.value
+                            ? 'bg-blue-700 text-white'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
             </div>

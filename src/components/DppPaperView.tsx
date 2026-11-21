@@ -71,7 +71,8 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
   const [draftNegMarks, setDraftNegMarks] = useState(0);
   const [draftOptions, setDraftOptions] = useState<{ label: string; text: string; smiles?: string }[]>([]);
 
-  const totalMarks = dpp.questions.reduce((sum, q) => sum + (q.marks || 0), 0);
+  const questions = Array.isArray(dpp?.questions) ? dpp.questions : [];
+  const totalMarks = questions.reduce((sum, q) => sum + (q.marks || 0), 0);
   const isLandscape = styleConfig.orientation === 'landscape';
   const paperWidthMm = isLandscape ? 297 : 210;
   const paperMinHeightMm = isLandscape ? 210 : 297;
@@ -315,7 +316,7 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                           : ''
                       }
                     >
-                      {dpp.questions.map((q) => {
+                      {questions.map((q) => {
                         const isSubjective = q.type === 'subjective';
                         const stemStyle = isSubjective
                           ? toTextCss(styleConfig.subjectiveStyle)
@@ -567,12 +568,12 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                                   <tbody>
                                     {Array.from({
                                       length: Math.max(
-                                        q.matchColumns.leftItems.length,
-                                        q.matchColumns.rightItems.length,
+                                        (q.matchColumns.leftItems || []).length,
+                                        (q.matchColumns.rightItems || []).length,
                                       ),
                                     }).map((_, rIdx) => {
-                                      const left = q.matchColumns!.leftItems[rIdx];
-                                      const right = q.matchColumns!.rightItems[rIdx];
+                                      const left = q.matchColumns!.leftItems?.[rIdx];
+                                      const right = q.matchColumns!.rightItems?.[rIdx];
                                       return (
                                         <tr
                                           key={rIdx}
@@ -613,7 +614,7 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                               q.type !== 'fill_blank' && (
                                 <div
                                   className={`mt-2.5 grid gap-x-4 gap-y-1.5 ${
-                                    q.options.some((o) => o.smiles || o.text.length > 42)
+                                    q.options.some((o) => o.smiles || (o.text || '').length > 42)
                                       ? 'grid-cols-1 sm:grid-cols-2'
                                       : 'grid-cols-2 sm:grid-cols-4'
                                   }`}
@@ -681,7 +682,7 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                               </tr>
                             </thead>
                             <tbody>
-                              {dpp.questions.map((q) => (
+                              {questions.map((q) => (
                                 <tr key={q.id} className="border-b border-slate-200/80 last:border-b-0">
                                   <td className="py-1.5 px-2.5 border-r border-slate-300 font-semibold">
                                     Q{q.number}
@@ -721,7 +722,7 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                               : 'space-y-4'
                           }
                         >
-                          {dpp.questions.map((q) => (
+                          {questions.map((q) => (
                             <article
                               key={q.id}
                               className="question-block-avoid-break break-inside-avoid mb-4 pb-3 border-b border-slate-200/70 last:border-b-0"
@@ -760,7 +761,7 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                                   underline: false,
                                 })}
                               >
-                                {q.solutionSteps.map((step, sIdx) => (
+                                {(Array.isArray(q.solutionSteps) ? q.solutionSteps : []).map((step, sIdx) => (
                                   <li key={sIdx}>
                                     <MathText text={step} />
                                   </li>

@@ -15,6 +15,7 @@ export type QuestionType =
 
 export type LanguageMedium = 'English' | 'Hindi' | 'Bilingual';
 export type AiReasoningMode = 'deep' | 'fast';
+export type AiProviderPref = 'auto' | 'groq' | 'gemini';
 
 export interface ReactionScheme {
   reactants: string[]; // SMILES strings
@@ -164,5 +165,6 @@ export interface GenerateDppPayload {
   marksPerQuestion: number;
   negativeMarks: number;
   aiMode: AiReasoningMode;
+  aiProvider?: AiProviderPref;
   customInstructions?: string;
 }

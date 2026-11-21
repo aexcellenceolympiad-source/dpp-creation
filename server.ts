@@ -13,6 +13,27 @@ app.use(express.json({ limit: '4mb' }));
 
 // Track model-specific cooldowns so we never repeatedly hit a 429-exhausted or 503-overloaded model
 let hydrogenCooldownUntil = 0;
+let groqPrimaryCooldownUntil = 0;
+
+type AiProviderPref = 'auto' | 'groq' | 'gemini';
+type QuestionType =
+  | 'mcq'
+  | 'multiple_correct'
+  | 'assertion_reason'
+  | 'true_false'
+  | 'fill_blank'
+  | 'match_following'
+  | 'subjective';
+
+const VALID_QUESTION_TYPES = new Set<QuestionType>([
+  'mcq',
+  'multiple_correct',
+  'assertion_reason',
+  'true_false',
+  'fill_blank',
+  'match_following',
+  'subjective',
+]);
 
 function getAiClient(): GoogleGenAI | null {
   const apiKey = process.env.GEMINI_API_KEY?.trim();
@@ -37,7 +58,7 @@ function getGroqApiKey(): string | null {
 function isQuotaExhaustedError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   const status = (err as { status?: number })?.status;
-  return status === 429 || /429|RESOURCE_EXHAUSTED|quota exceeded|rate-limits/i.test(msg);
+  return status === 429 || /429|RESOURCE_EXHAUSTED|quota exceeded|rate.?limit/i.test(msg);
 }
 
 function isServiceUnavailableError(err: unknown): boolean {
@@ -59,17 +80,20 @@ function isRetryableError(err: unknown): boolean {
 
 function extractCleanErrorMessage(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
-  if (/API_KEY_INVALID|PERMISSION_DENIED|No AI API key/i.test(raw)) {
-    return 'No valid AI API key configured. Check GEMINI_API_KEY or GROQ_API_KEY in Environment / Secrets.';
+  if (/API_KEY_INVALID|PERMISSION_DENIED|No AI API key|GROQ_API_KEY is not configured/i.test(raw)) {
+    return 'AI API key not configured or invalid. Check GEMINI_API_KEY or GROQ_API_KEY in Environment / Secrets.';
   }
-  if (/429|RESOURCE_EXHAUSTED|quota exceeded/i.test(raw)) {
-    return 'Free-tier rate limit reached for this minute. Please wait 30–60 seconds and click Retry.';
+  if (/429|RESOURCE_EXHAUSTED|quota exceeded|rate.?limit/i.test(raw)) {
+    return 'Free-tier rate limit reached for this minute. Wait 20–40 seconds and click Retry, or switch Engine.';
   }
   if (/503|UNAVAILABLE|overloaded|high demand/i.test(raw)) {
-    return 'Gemini free servers are currently experiencing high demand (503). Click Retry or add GROQ_API_KEY in Render Environment for instant zero-wait backup.';
+    return 'Gemini free servers are currently experiencing high demand (503). Click Retry or add GROQ_API_KEY in Render Environment for instant backup.';
   }
   if (/TIMEOUT/i.test(raw)) {
-    return 'Request took too long. Try Fast mode or generate 5–10 questions at once.';
+    return 'AI response took too long. Retry or generate 5–10 questions at once.';
+  }
+  if (/ABORTED/i.test(raw)) {
+    return 'Generation cancelled.';
   }
   try {
     const parsed = JSON.parse(raw);
@@ -82,23 +106,191 @@ function extractCleanErrorMessage(err: unknown): string {
   return raw.length > 240 ? raw.slice(0, 240) + '...' : raw;
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) {
+    return Promise.reject(new Error('ABORTED'));
+  }
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new Error('ABORTED'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  label: string,
+  signal?: AbortSignal,
+): Promise<T> {
+  if (signal?.aborted) {
+    return Promise.reject(new Error('ABORTED'));
+  }
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`TIMEOUT: ${label} exceeded ${ms}ms`)), ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new Error('ABORTED'));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      reject(new Error(`TIMEOUT: ${label} exceeded ${ms}ms`));
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+
     promise
       .then((val) => {
         clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
         resolve(val);
       })
       .catch((err) => {
         clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
         reject(err);
       });
   });
+}
+
+function extractJsonText(raw: string): string {
+  const trimmed = raw.trim();
+  const fencedMatch = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fencedMatch) {
+    return fencedMatch[1].trim();
+  }
+  const firstBrace = trimmed.indexOf('{');
+  const lastBrace = trimmed.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    return trimmed.slice(firstBrace, lastBrace + 1);
+  }
+  return trimmed;
+}
+
+function normalizeQuestion(
+  raw: Record<string, unknown>,
+  number: number,
+  marks: number,
+  neg: number,
+  allowedTypes: string[],
+): Record<string, unknown> {
+  const fallbackType = (
+    VALID_QUESTION_TYPES.has(allowedTypes[0] as QuestionType) ? allowedTypes[0] : 'mcq'
+  ) as QuestionType;
+  const rawType = typeof raw.type === 'string' ? (raw.type.trim() as QuestionType) : fallbackType;
+  const type: QuestionType = VALID_QUESTION_TYPES.has(rawType) ? rawType : fallbackType;
+
+  const rawOptions = Array.isArray(raw.options) ? raw.options : [];
+  const options =
+    type === 'subjective' || type === 'fill_blank'
+      ? []
+      : rawOptions
+          .filter((o): o is Record<string, unknown> => Boolean(o && typeof o === 'object'))
+          .map((o, idx) => ({
+            label:
+              typeof o.label === 'string' && o.label.trim()
+                ? o.label.trim()
+                : String.fromCharCode(65 + idx),
+            text: o.text == null ? '' : String(o.text),
+            ...(typeof o.smiles === 'string' && o.smiles.trim() ? { smiles: o.smiles.trim() } : {}),
+          }));
+
+  let matchColumns: Record<string, unknown> | undefined;
+  if (type === 'match_following' && raw.matchColumns && typeof raw.matchColumns === 'object') {
+    const mc = raw.matchColumns as Record<string, unknown>;
+    const leftItems = Array.isArray(mc.leftItems)
+      ? mc.leftItems
+          .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
+          .map((item, idx) => ({
+            key: typeof item.key === 'string' && item.key.trim() ? item.key.trim() : ['P', 'Q', 'R', 'S'][idx] || String(idx + 1),
+            text: item.text == null ? '' : String(item.text),
+          }))
+      : [];
+    const rightItems = Array.isArray(mc.rightItems)
+      ? mc.rightItems
+          .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
+          .map((item, idx) => ({
+            key: typeof item.key === 'string' && item.key.trim() ? item.key.trim() : String(idx + 1),
+            text: item.text == null ? '' : String(item.text),
+          }))
+      : [];
+    if (leftItems.length > 0 || rightItems.length > 0) {
+      matchColumns = {
+        leftHeader: typeof mc.leftHeader === 'string' && mc.leftHeader.trim() ? mc.leftHeader : 'Column I',
+        rightHeader: typeof mc.rightHeader === 'string' && mc.rightHeader.trim() ? mc.rightHeader : 'Column II',
+        leftItems,
+        rightItems,
+      };
+    }
+  }
+
+  let diagram: Record<string, unknown> = { kind: 'none' };
+  if (raw.diagram && typeof raw.diagram === 'object') {
+    const d = raw.diagram as Record<string, unknown>;
+    const kind = typeof d.kind === 'string' ? d.kind.trim() : 'none';
+    if (kind === 'svg' && typeof d.svgCode === 'string' && d.svgCode.includes('<svg')) {
+      diagram = {
+        kind: 'svg',
+        svgCode: d.svgCode,
+        ...(typeof d.caption === 'string' && d.caption.trim() ? { caption: d.caption.trim() } : {}),
+      };
+    } else if (kind === 'chemistry_smiles' && typeof d.smiles === 'string' && d.smiles.trim()) {
+      diagram = {
+        kind: 'chemistry_smiles',
+        smiles: d.smiles.trim(),
+        ...(typeof d.caption === 'string' && d.caption.trim() ? { caption: d.caption.trim() } : {}),
+      };
+    } else if (kind === 'chemistry_reaction' && d.reaction && typeof d.reaction === 'object') {
+      const rx = d.reaction as Record<string, unknown>;
+      const reactants = Array.isArray(rx.reactants)
+        ? rx.reactants.filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+        : [];
+      const products = Array.isArray(rx.products)
+        ? rx.products.filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+        : [];
+      if (reactants.length > 0 || products.length > 0) {
+        diagram = {
+          kind: 'chemistry_reaction',
+          reaction: {
+            reactants,
+            reagentsAbove: typeof rx.reagentsAbove === 'string' ? rx.reagentsAbove : '',
+            reagentsBelow: typeof rx.reagentsBelow === 'string' ? rx.reagentsBelow : '',
+            products,
+          },
+          ...(typeof d.caption === 'string' && d.caption.trim() ? { caption: d.caption.trim() } : {}),
+        };
+      }
+    }
+  }
+
+  const solutionSteps = Array.isArray(raw.solutionSteps)
+    ? raw.solutionSteps.map((s) => (s == null ? '' : String(s))).filter((s) => s.trim().length > 0)
+    : typeof raw.solutionSteps === 'string' && raw.solutionSteps.trim()
+      ? [raw.solutionSteps.trim()]
+      : [];
+
+  return {
+    id: `q-${Date.now()}-${number}-${Math.random().toString(36).slice(2, 6)}`,
+    number,
+    type,
+    marks,
+    negativeMarks:
+      type === 'mcq' || type === 'multiple_correct' || type === 'assertion_reason' ? neg : 0,
+    ...(typeof raw.pyqTag === 'string' && raw.pyqTag.trim() ? { pyqTag: raw.pyqTag.trim() } : {}),
+    stem: raw.stem == null ? '' : String(raw.stem),
+    ...(options.length > 0 ? { options } : {}),
+    ...(type === 'assertion_reason' && typeof raw.assertion === 'string' ? { assertion: raw.assertion } : {}),
+    ...(type === 'assertion_reason' && typeof raw.reason === 'string' ? { reason: raw.reason } : {}),
+    ...(matchColumns ? { matchColumns } : {}),
+    diagram,
+    correctAnswer: raw.correctAnswer == null ? '' : String(raw.correctAnswer),
+    solutionSteps:
+      solutionSteps.length > 0 ? solutionSteps : ['Apply the standard concept and verify values.'],
+  };
 }
 
 async function callGroqJson<T>(
@@ -106,8 +298,14 @@ async function callGroqJson<T>(
   prompt: string,
   isSingleQuestion: boolean,
   onProgress?: (msg: string) => void,
+  signal?: AbortSignal,
 ): Promise<T> {
-  const groqModels = ['llama-3.3-70b-versatile', 'openai/gpt-oss-120b'];
+  const now = Date.now();
+  const groqModels =
+    now < groqPrimaryCooldownUntil
+      ? ['llama-3.1-8b-instant', 'llama-3.3-70b-versatile']
+      : ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'];
+
   const jsonContract = isSingleQuestion
     ? `Return ONLY a valid JSON object matching this exact structure:
 {
@@ -119,7 +317,7 @@ async function callGroqJson<T>(
   "assertion": "optional string",
   "reason": "optional string",
   "matchColumns": {"leftHeader":"Column I","rightHeader":"Column II","leftItems":[{"key":"P","text":"..."}],"rightItems":[{"key":"1","text":"..."}]},
-  "diagram": {"kind":"none|svg|chemistry_smiles|chemistry_reaction","svgCode":"<svg viewBox='0 0 360 200' ...>","smiles":"optional","reaction":{"reactants":[],"reagentsAbove":"","reagentsBelow":"","products":[]},"caption":"optional"},
+  "diagram": {"kind":"none|svg|chemistry_smiles|chemistry_reaction","svgCode":"<svg viewBox='0 0 360 190' ...>","smiles":"optional","reaction":{"reactants":[],"reagentsAbove":"","reagentsBelow":"","products":[]},"caption":"optional"},
   "correctAnswer": "string",
   "solutionSteps": ["step 1", "step 2"]
 }`
@@ -137,7 +335,7 @@ async function callGroqJson<T>(
       "assertion": "optional string",
       "reason": "optional string",
       "matchColumns": {"leftHeader":"Column I","rightHeader":"Column II","leftItems":[{"key":"P","text":"..."}],"rightItems":[{"key":"1","text":"..."}]},
-      "diagram": {"kind":"none|svg|chemistry_smiles|chemistry_reaction","svgCode":"<svg viewBox='0 0 360 200' ...>","smiles":"optional","reaction":{"reactants":[],"reagentsAbove":"","reagentsBelow":"","products":[]},"caption":"optional"},
+      "diagram": {"kind":"none|svg|chemistry_smiles|chemistry_reaction","svgCode":"<svg viewBox='0 0 360 190' ...>","smiles":"optional","reaction":{"reactants":[],"reagentsAbove":"","reagentsBelow":"","products":[]},"caption":"optional"},
       "correctAnswer": "string",
       "solutionSteps": ["step 1", "step 2"]
     }
@@ -146,8 +344,13 @@ async function callGroqJson<T>(
 
   let lastGroqErr: unknown;
   for (const model of groqModels) {
+    if (signal?.aborted) throw new Error('ABORTED');
     try {
       onProgress?.(`Generating with Groq (${model})...`);
+      const controller = new AbortController();
+      const onOuterAbort = () => controller.abort();
+      signal?.addEventListener('abort', onOuterAbort, { once: true });
+
       const res = await withTimeout(
         fetch('https://api.groq.com/openai/v1/chat/completions', {
           method: 'POST',
@@ -155,9 +358,11 @@ async function callGroqJson<T>(
             'Content-Type': 'application/json',
             Authorization: `Bearer ${groqKey}`,
           },
+          signal: controller.signal,
           body: JSON.stringify({
             model,
             temperature: 0.35,
+            max_tokens: isSingleQuestion ? 1600 : 4096,
             response_format: { type: 'json_object' },
             messages: [
               {
@@ -167,13 +372,19 @@ async function callGroqJson<T>(
               { role: 'user', content: prompt },
             ],
           }),
+        }).finally(() => {
+          signal?.removeEventListener('abort', onOuterAbort);
         }),
-        45000,
+        24000,
         `groq:${model}`,
+        signal,
       );
 
       if (!res.ok) {
         const errText = await res.text();
+        if (res.status === 429 && model === 'llama-3.3-70b-versatile') {
+          groqPrimaryCooldownUntil = Date.now() + 90 * 1000;
+        }
         throw new Error(`Groq ${res.status}: ${errText.slice(0, 180)}`);
       }
       const data = (await res.json()) as {
@@ -183,8 +394,11 @@ async function callGroqJson<T>(
       if (!content) {
         throw new Error('Empty JSON response from Groq.');
       }
-      return JSON.parse(content) as T;
+      return JSON.parse(extractJsonText(content)) as T;
     } catch (err) {
+      if ((err instanceof Error && err.message === 'ABORTED') || signal?.aborted) {
+        throw new Error('ABORTED');
+      }
       lastGroqErr = err;
       console.warn(`Groq attempt (${model}) failed:`, err instanceof Error ? err.message : err);
     }
@@ -192,142 +406,181 @@ async function callGroqJson<T>(
   throw lastGroqErr;
 }
 
-async function callGeminiWithRetry<T = any>(
+async function callAiWithRetry<T = any>(
   ai: GoogleGenAI | null,
   prompt: string,
   schema: Record<string, unknown>,
   onProgress?: (msg: string) => void,
   options?: {
     aiMode?: 'deep' | 'fast';
+    aiProvider?: AiProviderPref;
     isSingleQuestion?: boolean;
+    signal?: AbortSignal;
     validate?: (parsed: T) => boolean;
   },
 ): Promise<T> {
+  const signal = options?.signal;
+  if (signal?.aborted) throw new Error('ABORTED');
+
   const groqKey = getGroqApiKey();
+  const providerPref: AiProviderPref = options?.aiProvider || 'auto';
+  const isDeep = options?.aiMode === 'deep';
+
+  if (providerPref === 'groq' && !groqKey) {
+    throw new Error('GROQ_API_KEY is not configured in server Environment / Secrets.');
+  }
   if (!ai && !groqKey) {
     throw new Error('No AI API key configured (GEMINI_API_KEY or GROQ_API_KEY).');
   }
 
-  const now = Date.now();
-  const isDeep = options?.aiMode === 'deep';
-  const attempts: { model: string; thinkingLevel?: ThinkingLevel; timeoutMs: number }[] = [];
+  const tryGroq = async (): Promise<T | null> => {
+    if (!groqKey) return null;
+    const groqParsed = await callGroqJson<T>(
+      groqKey,
+      prompt,
+      Boolean(options?.isSingleQuestion),
+      onProgress,
+      signal,
+    );
+    if (options?.validate && !options.validate(groqParsed)) {
+      throw new Error('Incomplete question batch returned by Groq.');
+    }
+    return groqParsed;
+  };
 
+  // Fast path: Use Groq FIRST whenever user chose Groq OR Auto + Fast mode with GROQ_API_KEY configured
+  const shouldPreferGroqFirst =
+    Boolean(groqKey) && (providerPref === 'groq' || (providerPref === 'auto' && !isDeep));
+
+  let lastError: unknown;
+
+  if (shouldPreferGroqFirst) {
+    try {
+      const groqRes = await tryGroq();
+      if (groqRes) return groqRes;
+    } catch (err) {
+      if ((err instanceof Error && err.message === 'ABORTED') || signal?.aborted) {
+        throw new Error('ABORTED');
+      }
+      lastError = err;
+      // If user explicitly forced Groq and Gemini is absent, fail cleanly
+      if (!ai) {
+        throw err;
+      }
+    }
+  }
+
+  // Gemini attempts
   if (ai) {
+    const now = Date.now();
+    const attempts: { model: string; thinkingLevel?: ThinkingLevel; timeoutMs: number }[] = [];
+
     if (isDeep && now > hydrogenCooldownUntil) {
       attempts.push({
         model: 'gemini-4-hydrogen',
         thinkingLevel: ThinkingLevel.MEDIUM,
-        timeoutMs: 25000,
+        timeoutMs: 18000,
       });
     }
 
     attempts.push({
       model: 'gemini-3.1-flash-lite',
       thinkingLevel: isDeep ? ThinkingLevel.HIGH : undefined,
-      timeoutMs: 50000,
+      timeoutMs: 32000,
     });
 
-    if (!groqKey) {
-      attempts.push({ model: 'gemini-3.1-flash-lite', timeoutMs: 50000 });
+    // Only enqueue a second Gemini retry if we don't have Groq backup waiting
+    if (!groqKey || providerPref === 'gemini') {
+      attempts.push({ model: 'gemini-3.1-flash-lite', timeoutMs: 32000 });
     }
 
-    if (!isDeep && now > hydrogenCooldownUntil && !groqKey) {
-      attempts.push({
-        model: 'gemini-4-hydrogen',
-        thinkingLevel: ThinkingLevel.LOW,
-        timeoutMs: 22000,
-      });
-    }
-  }
+    for (let i = 0; i < attempts.length; i++) {
+      if (signal?.aborted) throw new Error('ABORTED');
+      const attempt = attempts[i];
+      try {
+        onProgress?.(
+          i === 0
+            ? `Generating with ${attempt.model}${isDeep && attempt.thinkingLevel ? ' (Deep)' : ''}...`
+            : `Retrying with ${attempt.model}...`,
+        );
 
-  let lastError: unknown;
-  for (let i = 0; i < attempts.length; i++) {
-    const attempt = attempts[i];
-    try {
-      onProgress?.(
-        i === 0
-          ? `Generating with ${attempt.model}${isDeep && attempt.thinkingLevel ? ' (Deep Reasoning)' : ''}...`
-          : `Retrying with ${attempt.model} (attempt ${i + 1}/${attempts.length})...`,
-      );
-
-      const config: Record<string, unknown> = {
-        responseMimeType: 'application/json',
-        responseSchema: schema,
-      };
-      // Note: Gemini 4 models reject temperature/topP/topK — only attach thinkingConfig cleanly
-      if (attempt.thinkingLevel) {
-        config.thinkingConfig = { thinkingLevel: attempt.thinkingLevel };
-      }
-
-      const response = await withTimeout(
-        ai!.models.generateContent({
-          model: attempt.model,
-          contents: prompt,
-          config,
-        }),
-        attempt.timeoutMs,
-        attempt.model,
-      );
-
-      const rawText = (response.text ?? '{}').trim();
-      if (!rawText || rawText === '{}') {
-        throw new Error('Empty JSON response from Gemini model.');
-      }
-      const parsed = JSON.parse(rawText) as T;
-      if (options?.validate && !options.validate(parsed)) {
-        throw new Error('Incomplete question batch returned by model.');
-      }
-      return parsed;
-    } catch (err) {
-      lastError = err;
-      const isQuota = isQuotaExhaustedError(err);
-      const is503 = isServiceUnavailableError(err);
-      if (attempt.model === 'gemini-4-hydrogen') {
-        if (isQuota) {
-          hydrogenCooldownUntil = Date.now() + 60 * 60 * 1000;
-        } else if (is503) {
-          // Put overloaded gemini-4-hydrogen on 10-minute cooldown so fast/next batches go straight to flash-lite or Groq
-          hydrogenCooldownUntil = Date.now() + 10 * 60 * 1000;
+        const config: Record<string, unknown> = {
+          responseMimeType: 'application/json',
+          responseSchema: schema,
+        };
+        if (attempt.thinkingLevel) {
+          config.thinkingConfig = { thinkingLevel: attempt.thinkingLevel };
         }
-      }
-      const reason = err instanceof Error ? err.message.slice(0, 140) : String(err);
-      console.warn(`Gemini attempt ${i + 1} (${attempt.model}) failed: ${reason}`);
 
-      // If Groq backup is available and Gemini failed with 503/429/timeout, fail over cleanly to Groq!
-      if (groqKey && (is503 || isQuota || /TIMEOUT|Empty JSON/i.test(reason))) {
-        try {
-          const groqParsed = await callGroqJson<T>(
-            groqKey,
-            prompt,
-            Boolean(options?.isSingleQuestion),
-            onProgress,
-          );
-          if (!options?.validate || options.validate(groqParsed)) {
-            return groqParsed;
+        const response = await withTimeout(
+          ai.models.generateContent({
+            model: attempt.model,
+            contents: prompt,
+            config,
+          }),
+          attempt.timeoutMs,
+          attempt.model,
+          signal,
+        );
+
+        const rawText = (response.text ?? '{}').trim();
+        if (!rawText || rawText === '{}') {
+          throw new Error('Empty JSON response from Gemini model.');
+        }
+        const parsed = JSON.parse(extractJsonText(rawText)) as T;
+        if (options?.validate && !options.validate(parsed)) {
+          throw new Error('Incomplete question batch returned by model.');
+        }
+        return parsed;
+      } catch (err) {
+        if ((err instanceof Error && err.message === 'ABORTED') || signal?.aborted) {
+          throw new Error('ABORTED');
+        }
+        lastError = err;
+        const isQuota = isQuotaExhaustedError(err);
+        const is503 = isServiceUnavailableError(err);
+        if (attempt.model === 'gemini-4-hydrogen') {
+          if (isQuota) {
+            hydrogenCooldownUntil = Date.now() + 60 * 60 * 1000;
+          } else if (is503 || /TIMEOUT/i.test(err instanceof Error ? err.message : '')) {
+            hydrogenCooldownUntil = Date.now() + 10 * 60 * 1000;
           }
-        } catch (groqErr) {
-          lastError = groqErr;
         }
-      }
+        const reason = err instanceof Error ? err.message.slice(0, 140) : String(err);
+        console.warn(`Gemini attempt ${i + 1} (${attempt.model}) failed: ${reason}`);
 
-      if ((!isRetryableError(err) && !/Empty JSON|Incomplete question/i.test(reason)) || i === attempts.length - 1) {
-        break;
+        // Instant failover to Groq if available and not already tried first
+        if (
+          groqKey &&
+          !shouldPreferGroqFirst &&
+          (is503 || isQuota || /TIMEOUT|Empty JSON/i.test(reason))
+        ) {
+          try {
+            const groqRes = await tryGroq();
+            if (groqRes) return groqRes;
+          } catch (groqErr) {
+            lastError = groqErr;
+          }
+        }
+
+        if (
+          (!isRetryableError(err) && !/Empty JSON|Incomplete question/i.test(reason)) ||
+          i === attempts.length - 1
+        ) {
+          break;
+        }
+        await sleep(isQuota ? 2200 : 600, signal);
       }
-      const delayMs = isQuota && attempt.model === 'gemini-3.1-flash-lite' ? 3500 : 1000;
-      await sleep(delayMs);
     }
   }
 
-  // Final automatic Groq rescue if Gemini didn't succeed or GEMINI_API_KEY was absent
-  if (groqKey) {
-    const groqParsed = await callGroqJson<T>(
-      groqKey,
-      prompt,
-      Boolean(options?.isSingleQuestion),
-      onProgress,
-    );
-    if (!options?.validate || options.validate(groqParsed)) {
-      return groqParsed;
+  // Final Groq rescue if we haven't tried Groq yet
+  if (groqKey && !shouldPreferGroqFirst) {
+    try {
+      const groqRes = await tryGroq();
+      if (groqRes) return groqRes;
+    } catch (groqErr) {
+      lastError = groqErr;
     }
   }
 
@@ -340,17 +593,17 @@ const diagramSchema = {
     kind: {
       type: Type.STRING,
       description:
-        "Diagram kind: 'none', 'svg', 'chemistry_smiles', or 'chemistry_reaction'. Use 'chemistry_smiles' or 'chemistry_reaction' for organic chemistry structures/benzene/reactions, and 'svg' for Physics/Math/Biology/Geometry diagrams.",
+        "Diagram kind: 'none', 'svg', 'chemistry_smiles', or 'chemistry_reaction'.",
     },
     svgCode: {
       type: Type.STRING,
       description:
-        "Self-contained SVG string with viewBox='0 0 360 200' using stroke='currentColor' and fill='none' (or subtle fill-opacity). Required when kind is 'svg'.",
+        "Compact self-contained <svg viewBox='0 0 360 190' ...> using stroke='currentColor' and fill='none'. Required only when kind='svg'.",
     },
     smiles: {
       type: Type.STRING,
       description:
-        "Valid canonical SMILES string for a single organic molecule (e.g. 'c1ccccc1' for benzene, 'O=[N+]([O-])c1ccccc1' for nitrobenzene). Required when kind is 'chemistry_smiles'.",
+        "Valid canonical SMILES string. Required only when kind='chemistry_smiles'.",
     },
     reaction: {
       type: Type.OBJECT,
@@ -358,27 +611,16 @@ const diagramSchema = {
         reactants: {
           type: Type.ARRAY,
           items: { type: Type.STRING },
-          description: 'Array of valid SMILES strings for reactants.',
         },
-        reagentsAbove: {
-          type: Type.STRING,
-          description: 'Reagents/conditions shown above the reaction arrow.',
-        },
-        reagentsBelow: {
-          type: Type.STRING,
-          description: 'Solvent/temperature/secondary step shown below the reaction arrow.',
-        },
+        reagentsAbove: { type: Type.STRING },
+        reagentsBelow: { type: Type.STRING },
         products: {
           type: Type.ARRAY,
           items: { type: Type.STRING },
-          description: 'Array of valid SMILES strings for products.',
         },
       },
     },
-    caption: {
-      type: Type.STRING,
-      description: 'Short figure caption like Fig 1. Free-body diagram or Reaction scheme.',
-    },
+    caption: { type: Type.STRING },
   },
   required: ['kind'],
 };
@@ -392,35 +634,25 @@ const questionSchema = {
       description:
         "Exact question type: 'mcq', 'multiple_correct', 'assertion_reason', 'true_false', 'fill_blank', 'match_following', or 'subjective'.",
     },
-    pyqTag: {
-      type: Type.STRING,
-      description:
-        "Exam & reference book alignment tag, e.g. 'JEE Adv 2022 Pattern · HC Verma', 'NEET PYQ Pattern · NCERT', 'JAC Class 10 Pattern', 'ICSE Selina Pattern'.",
-    },
+    pyqTag: { type: Type.STRING },
     stem: {
       type: Type.STRING,
-      description:
-        'Full question text. Use standard LaTeX math inside $...$ or $$...$$ and inorganic formulas inside $\\ce{...}$.',
+      description: 'Question stem with LaTeX inside $...$ / $$...$$ and inorganic formulas inside $\\ce{...}$.',
     },
     options: {
       type: Type.ARRAY,
       items: {
         type: Type.OBJECT,
         properties: {
-          label: { type: Type.STRING, description: 'A, B, C, or D' },
+          label: { type: Type.STRING },
           text: { type: Type.STRING },
-          smiles: {
-            type: Type.STRING,
-            description: 'Optional SMILES string if the option itself is an organic chemical structure.',
-          },
+          smiles: { type: Type.STRING },
         },
         required: ['label', 'text'],
       },
-      description:
-        'Provide 4 options A-D for mcq/multiple_correct/assertion_reason, or 2 options True/False for true_false.',
     },
-    assertion: { type: Type.STRING, description: 'Only for assertion_reason type.' },
-    reason: { type: Type.STRING, description: 'Only for assertion_reason type.' },
+    assertion: { type: Type.STRING },
+    reason: { type: Type.STRING },
     matchColumns: {
       type: Type.OBJECT,
       properties: {
@@ -451,15 +683,11 @@ const questionSchema = {
       },
     },
     diagram: diagramSchema,
-    correctAnswer: {
-      type: Type.STRING,
-      description:
-        'Concise final answer key value (e.g. "B", "A, C", "True", "4.5 m/s", "P->2, Q->4, R->1, S->3").',
-    },
+    correctAnswer: { type: Type.STRING },
     solutionSteps: {
       type: Type.ARRAY,
       items: { type: Type.STRING },
-      description: 'Clear step-by-step academic solution with LaTeX math and reasoning.',
+      description: '2-4 crisp, verified step-by-step solution bullets with LaTeX.',
     },
   },
   required: ['number', 'type', 'stem', 'correctAnswer', 'solutionSteps'],
@@ -495,7 +723,7 @@ function buildPedagogicalPrompt(
   },
   batchCount: number,
   startNumber: number,
-  avoidStems: string[] = [],
+  batchFocus?: string,
 ) {
   const isJunior = parseInt(body.classLevel, 10) <= 10;
   const boardOrExam = isJunior ? body.juniorBoard : body.seniorExam;
@@ -505,78 +733,41 @@ function buildPedagogicalPrompt(
   let levelCalibration = '';
   if (isJunior) {
     if (body.juniorTier === 'Olympiad Level') {
-      levelCalibration = `CRITICAL CALIBRATION (Class ${body.classLevel} ${body.juniorBoard} — OLYMPIAD LEVEL):
-- Match the exact rigor of IOQM / PRMO / RMO / NSEJS / IJSO / SOF Level-2 / NTSE Stage-2 archives and books like Pathfinder Olympiad, Hall & Knight, S.L. Loney.
-- Avoid trivial textbook recall; test multi-step analytical reasoning, hidden constraints, clever algebraic/geometric insight, or experimental logic.`;
+      levelCalibration = `LEVEL (Class ${body.classLevel} ${body.juniorBoard} Olympiad): Match IOQM/NSEJS/IJSO/NTSE Stage-2 & Pathfinder/Hall-Knight rigor with multi-step analytical insight.`;
     } else {
-      levelCalibration = `CRITICAL CALIBRATION (Class ${body.classLevel} ${body.juniorBoard} — SCHOOL / BOARD LEVEL):
-- Match the exact latest ${body.juniorBoard} Board blueprint and model question paper style (${body.juniorBoard === 'JAC' ? 'Jharkhand Academic Council / JCERT pattern' : body.juniorBoard === 'ICSE' ? 'CISCE ICSE Selina / ML Aggarwal / analytical board pattern' : 'CBSE Competency & Case-based NCERT / RD Sharma pattern'}).
-- Maintain strict Class ${body.classLevel} syllabus boundaries.`;
+      levelCalibration = `LEVEL (Class ${body.classLevel} ${body.juniorBoard} Board): Match latest ${body.juniorBoard} blueprint (${body.juniorBoard === 'JAC' ? 'JCERT/JAC' : body.juniorBoard === 'ICSE' ? 'ICSE Selina/ML Aggarwal' : 'CBSE Competency NCERT/RD Sharma'}) strictly within Class ${body.classLevel} syllabus.`;
     }
+  } else if (body.seniorExam === 'JEE Advanced') {
+    levelCalibration = `LEVEL (Class ${body.classLevel} JEE Advanced IIT): Match IIT-JEE PYQ & HC Verma / Irodov / Black Book / Cengage / MS Chouhan depth. Multi-concept synthesis & subtle edge-case traps; zero trivial recall.`;
+  } else if (body.seniorExam === 'JEE Mains') {
+    levelCalibration = `LEVEL (Class ${body.classLevel} JEE Main NTA): Match 2022–2026 NTA JEE Main PYQ standard, Cengage/Arihant numerical & conceptual traps.`;
+  } else if (body.seniorExam === 'NEET') {
+    levelCalibration = `LEVEL (Class ${body.classLevel} NEET UG): Strict NCERT line-by-line precision, Exemplar traps, A&R, and fast numericals (no JEE Adv calculus).`;
   } else {
-    if (body.seniorExam === 'JEE Advanced') {
-      levelCalibration = `CRITICAL CALIBRATION (Class ${body.classLevel} — JEE ADVANCED IIT PATTERN):
-- Match genuine JEE Advanced (IIT) PYQ depth and elite books: H.C. Verma, Irodov, Pathfinder, Cengage (BM Sharma / G. Tewani), Vikas Gupta (Black Book), Sameer Bansal, A. Das Gupta, S.L. Loney, Hall & Knight, M.S. Chouhan, N. Awasthi.
-- NEVER generate trivial one-line NEET/board recall questions! Every problem must require multi-concept synthesis, calculus/vectors/functional analysis where natural, edge-case traps, stereochemical/mechanistic rigor, or subtle physical principles.`;
-    } else if (body.seniorExam === 'JEE Mains') {
-      levelCalibration = `CRITICAL CALIBRATION (Class ${body.classLevel} — JEE MAIN NTA LATEST PATTERN):
-- Match recent 2022–2026 NTA JEE Main PYQ shifts and Cengage (G. Tewani / BM Sharma) / Arihant Skills in Mathematics / HC Verma problem standards.
-- Balanced numerical calculation, formula synthesis, statement/assertion-reason, and subtle conceptual traps.`;
-    } else if (body.seniorExam === 'NEET') {
-      levelCalibration = `CRITICAL CALIBRATION (Class ${body.classLevel} — NEET UG MEDICAL PATTERN):
-- Match latest NTA NEET (UG) PYQ pattern: strict NCERT line-by-line conceptual precision, NCERT Exemplar traps, assertion-reason, statement matching, and crisp speed-solvable physics/chemistry numericals (no heavy JEE-Advanced calculus).`;
-    } else {
-      levelCalibration = `CRITICAL CALIBRATION (Class ${body.classLevel} — BOARD EXAMS CBSE/JAC/ISC):
-- Match latest Board Exam blueprint (1-mark MCQs/A&R, 2/3/5-mark derivations, RD Sharma / ML Aggarwal / SL Arora numericals, and conceptual board PYQs).`;
-    }
+    levelCalibration = `LEVEL (Class ${body.classLevel} Board Exams): Match CBSE/JAC/ISC Board marking scheme, derivations, and NCERT/RD Sharma/SL Arora problems.`;
   }
 
-  return `You are a Principal Indian Olympiad & JEE/NEET/Board Paper-Setter for Classes 7–12 (authoring at the international publication standard of HC Verma, Cengage, Vikas Gupta Black Book, Sameer Bansal, Arihant, MS Chouhan, N. Awasthi, NCERT, ICSE Selina, and JAC/CBSE Boards).
+  return `You are a Principal Indian IIT-JEE/NEET/Board Paper-Setter. Generate EXACTLY ${batchCount} ORIGINAL, VERIFIED questions numbered ${startNumber} to ${startNumber + batchCount - 1}.
 
-TASK: Generate EXACTLY ${batchCount} ORIGINAL, MATHEMATICALLY VERIFIED questions numbered starting from ${startNumber} (${startNumber} to ${startNumber + batchCount - 1}).
-
-TARGET SPECIFICATION:
-- Class: Class ${body.classLevel}
-- Board / Exam: ${boardOrExam} (${tierOrLevel})
-- Subject: ${body.subject}
+SPEC:
+- Class ${body.classLevel} · ${boardOrExam} (${tierOrLevel}) · Subject: ${body.subject}
 - Chapter: ${body.chapter}
-- EXACT LOCKED TOPIC: "${body.topic}"
-
-MANDATORY EXACT-TOPIC LOCK (ZERO TOLERANCE FOR OFF-TOPIC DRIFT):
-- EVERY SINGLE QUESTION (Q${startNumber} to Q${startNumber + batchCount - 1}) MUST strictly and directly test ONLY "${body.topic}" within "${body.chapter}".
-- NEVER include questions from neighboring topics, other sub-topics of "${body.chapter}", or general chapter mixes.
-- Even if "${body.topic}" is a single narrow sub-topic, theorem, formula, or named reaction, keep 100% of questions locked directly onto "${body.topic}" by varying numerical setups, graphs/diagrams, edge cases, and question formats.
-
-- Language Medium: ${body.medium}${body.medium === 'Bilingual' ? ' (Write each question stem cleanly in English followed by its exact Hindi translation in Devanagari)' : body.medium === 'Hindi' ? ' (Write all stems, options, and solutions in pure academic Hindi Devanagari, keeping mathematical symbols/equations in LaTeX)' : ''}
-- Reference Calibration: ${body.referenceBooks.join(', ')}
-- Allowed Question Types (distribute cleanly across these selected types): ${body.questionTypes.join(', ')}
-- Diagram / Figure Requirement: Generate high-precision diagrams for AT LEAST ${targetDiagramCount} out of ${batchCount} questions (${body.diagramPercentage}%). If ${body.diagramPercentage} === 0, set diagram.kind = 'none' for all questions.
-
+- EXACT LOCKED TOPIC (100% STRICT): "${body.topic}"
+  -> Every single question MUST test ONLY "${body.topic}". Zero off-topic drift to other topics of "${body.chapter}".
+- Medium: ${body.medium}${body.medium === 'Bilingual' ? ' (English stem + exact Hindi Devanagari translation below)' : body.medium === 'Hindi' ? ' (Academic Hindi Devanagari + LaTeX math)' : ''}
+- Books: ${body.referenceBooks.join(', ')}
+- Allowed Types (distribute cleanly): ${body.questionTypes.join(', ')}
+- Diagrams: ${targetDiagramCount > 0 ? `Include clean diagrams for ~${targetDiagramCount}/${batchCount} Qs.` : `Set diagram.kind='none' for all Qs.`}
+${batchFocus ? `- Batch Diversity Angle: ${batchFocus}` : ''}
 ${levelCalibration}
 
-SELF-VERIFICATION & DISTRACTOR QUALITY PROTOCOL (MANDATORY BEFORE OUTPUT):
-1. Verify every single calculation, algebraic sign, boundary limit, dimensional unit, and chemical stoichiometry step-by-step internally BEFORE finalizing "correctAnswer" and "solutionSteps".
-2. Ensure zero ambiguity: for single-correct MCQ, EXACTLY ONE option among (A), (B), (C), (D) must equal the verified answer; the other 3 distractors must represent realistic student mistakes (e.g., sign flip, missing factor of 2, wrong directing group, boundary confusion) — never absurd or obvious throwaway options.
-3. For subjective/numerical proof questions, provide complete step-by-step mathematical derivations in solutionSteps using crisp LaTeX.
-4. TOPIC-LOCK AUDIT: Before emitting each question, confirm it directly tests "${body.topic}" — discard and replace any question that drifts onto another topic of "${body.chapter}".
-
-DIAGRAM & TYPESETTING RULES (INTERNATIONAL PUBLICATION STANDARD):
-1. MATH & EQUATIONS: Use standard LaTeX wrapped in $...$ (inline) or $$...$$ (display). For inorganic formulas/reactions, use $\\ce{...}$. Double-escape backslashes properly in JSON strings (e.g. "\\\\frac{1}{2}").
-2. ORGANIC CHEMISTRY STRUCTURES: Whenever an Organic Chemistry question involves benzene rings, substituted aromatics, cyclic molecules, stereoisomers, or reaction mechanisms:
-   - Set diagram.kind = 'chemistry_smiles' with a valid canonical SMILES string (e.g. "c1ccccc1" for benzene, "Oc1ccccc1" for phenol, "O=[N+]([O-])c1ccccc1" for nitrobenzene), OR
-   - Set diagram.kind = 'chemistry_reaction' with reactants (SMILES array), reagentsAbove, reagentsBelow, and products (SMILES array).
-   - You may ALSO attach optional "smiles" directly on MCQ options.
-3. PHYSICS / MATHEMATICS / GEOMETRY / BIOLOGY DIAGRAMS:
-   - Set diagram.kind = 'svg' and provide clean, crisp, textbook-grade <svg viewBox="0 0 360 200" xmlns="http://www.w3.org/2000/svg">...</svg>.
-   - Use stroke="currentColor" and fill="none" (or subtle fill-opacity="0.08"). Include clean <text> labels (font-family="serif" font-size="12" fill="currentColor") and arrowheads where needed. Ensure labels never overlap lines.
-4. QUESTION TYPE RULES:
-   - 'assertion_reason': populate "assertion", "reason", and 4 options A–D.
-   - 'match_following': populate "matchColumns" (leftItems P,Q,R,S and rightItems 1,2,3,4) and 4 MCQ options A–D.
-   - 'true_false': options A: True, B: False.
-   - 'fill_blank': include "________" in stem.
-   - 'subjective': leave options empty.
-${avoidStems.length > 0 ? `\nDO NOT REPEAT OR PARAPHRASE THESE PREVIOUS QUESTIONS:\n${avoidStems.map((s, idx) => `${idx + 1}. ${s.slice(0, 90)}`).join('\n')}` : ''}
-${body.customInstructions?.trim() ? `\nHIGH-PRIORITY TEACHER / ADMIN INSTRUCTIONS (MUST FOLLOW STRICTLY):\n${body.customInstructions.trim()}` : ''}`;
+QUALITY & SPEED RULES:
+1. Verify algebra, units, signs, and stoichiometry before finalizing "correctAnswer" & "solutionSteps". Single-correct MCQ must have 1 exact answer + 3 realistic distractors.
+2. Keep "solutionSteps" crisp and high-yield (2–4 clear steps with $...$ LaTeX / $\\ce{...}$). Double-escape JSON backslashes (e.g. "\\\\frac{1}{2}").
+3. Organic Chemistry diagrams: use diagram.kind='chemistry_smiles' (valid SMILES) or 'chemistry_reaction'.
+4. Physics/Math/Bio diagrams: use diagram.kind='svg' with compact <svg viewBox="0 0 360 190" xmlns="http://www.w3.org/2000/svg"> (stroke="currentColor" fill="none", clean primitives & non-overlapping labels).
+5. Type format: 'assertion_reason' -> assertion, reason, 4 options A-D; 'match_following' -> matchColumns (P,Q,R,S & 1,2,3,4) + 4 options A-D; 'true_false' -> options A: True, B: False; 'fill_blank' -> "________" in stem; 'subjective' -> empty options.
+${body.customInstructions?.trim() ? `\nTEACHER INSTRUCTIONS (STRICT):\n${body.customInstructions.trim()}` : ''}`;
 }
 
 app.get('/api/health', (_req, res) => {
@@ -596,14 +787,19 @@ app.post('/api/dpp/generate', async (req, res) => {
   }
 
   const wantsStream = req.headers.accept?.includes('application/x-ndjson');
+  const controller = new AbortController();
   let heartbeat: ReturnType<typeof setInterval> | null = null;
   let clientAborted = false;
 
-  req.on('close', () => {
-    if (!res.writableEnded) {
+  res.on('close', () => {
+    if (!res.writableFinished && !res.writableEnded) {
       clientAborted = true;
+      controller.abort();
     }
-    if (heartbeat) clearInterval(heartbeat);
+    if (heartbeat) {
+      clearInterval(heartbeat);
+      heartbeat = null;
+    }
   });
 
   if (wantsStream) {
@@ -611,7 +807,8 @@ app.post('/api/dpp/generate', async (req, res) => {
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('X-Accel-Buffering', 'no');
     res.status(200);
-    res.write(JSON.stringify({ type: 'progress', message: 'Initializing PYQ paper-setter...' }) + '\n');
+    res.flushHeaders?.();
+    res.write(JSON.stringify({ type: 'progress', message: 'Starting fast batch generator...' }) + '\n');
 
     heartbeat = setInterval(() => {
       if (!res.writableEnded && !clientAborted) {
@@ -627,20 +824,47 @@ app.post('/api/dpp/generate', async (req, res) => {
     const neg = Number(body.negativeMarks) || 0;
     const isJunior = parseInt(body.classLevel, 10) <= 10;
     const aiMode = body.aiMode === 'deep' ? 'deep' : 'fast';
+    const aiProvider: AiProviderPref =
+      body.aiProvider === 'groq' || body.aiProvider === 'gemini' ? body.aiProvider : 'auto';
+    const allowedTypes = Array.isArray(body.questionTypes) && body.questionTypes.length > 0
+      ? body.questionTypes
+      : ['mcq'];
 
-    // Smart batch size: up to 10 questions per call (8 when heavy diagrams) so 30 questions cleanly split into 3-4 batches
+    // Fast 5-question batches (4 when heavy diagrams) so Batch 1 appears within seconds & parallel pool finishes fast
     const batchSizes: number[] = [];
     let remaining = totalRequested;
-    const maxBatch = Number(body.diagramPercentage) >= 70 ? 8 : 10;
+    const maxBatch = Number(body.diagramPercentage) >= 70 ? 4 : 5;
     while (remaining > 0) {
       const size = Math.min(remaining, maxBatch);
       batchSizes.push(size);
       remaining -= size;
     }
 
-    const allQuestions: Record<string, unknown>[] = [];
+    const batchAngles = [
+      'Batch 1 ONLY: Focus on core definitions, basic facts/laws & direct foundational PYQ setups. Do NOT cover edge cases or comparative synthesis.',
+      'Batch 2 ONLY: Focus on cause-effect reasoning, consequences, multi-step numerical/analytical problems & conceptual traps. NEVER repeat basic introductory recall.',
+      'Batch 3 ONLY: Focus on graphical/diagrammatic interpretations, special boundary cases, comparative analysis & statement-based twists.',
+      'Batch 4 ONLY: Focus on non-standard parameters, mixed constraints, exceptions & tricky exam variations.',
+      'Batch 5 ONLY: Focus on high-yield reference-book / Exemplar rank-booster scenarios & critical evaluation.',
+      'Batch 6 ONLY: Final distinct sweep of unique numerical/analytical cases not covered in Batches 1–5.',
+    ];
+
+    const batchResults: (Record<string, unknown>[] | null)[] = new Array(batchSizes.length).fill(null);
     let sheetTitle = '';
     let sheetSubtitle = '';
+    let completedBatches = 0;
+
+    const collectOrderedQuestions = (): Record<string, unknown>[] => {
+      const collected: Record<string, unknown>[] = [];
+      let num = 1;
+      for (const batch of batchResults) {
+        if (!batch) continue;
+        for (const q of batch) {
+          collected.push({ ...q, number: num++ });
+        }
+      }
+      return collected;
+    };
 
     const buildPayload = () => ({
       title: sheetTitle || `${body.subject} DPP — ${body.topic}`,
@@ -657,77 +881,85 @@ app.post('/api/dpp/generate', async (req, res) => {
         referenceBooks: body.referenceBooks || [],
         medium: body.medium || 'English',
       },
-      questions: [...allQuestions],
+      questions: collectOrderedQuestions(),
     });
 
-    for (let bIdx = 0; bIdx < batchSizes.length; bIdx++) {
-      if (clientAborted) {
-        break;
-      }
-      if (bIdx > 0) {
-        await sleep(1200);
-      }
-      if (clientAborted) {
-        break;
-      }
-
-      const batchSize = batchSizes[bIdx];
-      const startNum = allQuestions.length + 1;
-      const avoidStems = allQuestions.map((q) => String(q.stem || ''));
-      const prompt = buildPedagogicalPrompt(body, batchSize, startNum, avoidStems);
-
-      const batchLabel =
-        batchSizes.length > 1
-          ? `Generating batch ${bIdx + 1}/${batchSizes.length} (Q${startNum}–Q${startNum + batchSize - 1})...`
-          : undefined;
-
-      if (batchLabel && wantsStream && !res.writableEnded && !clientAborted) {
-        res.write(JSON.stringify({ type: 'progress', message: batchLabel }) + '\n');
-      }
-
-      const parsed = await callGeminiWithRetry<{
-        title?: string;
-        subtitle?: string;
-        questions?: Record<string, unknown>[];
-      }>(
-        ai,
-        prompt,
-        dppResponseSchema,
-        (msg) => {
-          if (wantsStream && !res.writableEnded && !clientAborted) {
-            res.write(
-              JSON.stringify({
-                type: 'progress',
-                message: batchLabel ? `${batchLabel} ${msg}` : msg,
-              }) + '\n',
-            );
-          }
-        },
-        {
-          aiMode,
-          validate: (data) => Array.isArray(data?.questions) && data.questions.length > 0,
-        },
-      );
-
-      if (!sheetTitle && parsed.title) sheetTitle = parsed.title;
-      if (!sheetSubtitle && parsed.subtitle) sheetSubtitle = parsed.subtitle;
-
-      for (const q of parsed.questions || []) {
-        const idx = allQuestions.length + 1;
-        allQuestions.push({
-          ...q,
-          id: `q-${Date.now()}-${idx}`,
-          number: idx,
-          marks,
-          negativeMarks:
-            q.type === 'mcq' || q.type === 'multiple_correct' || q.type === 'assertion_reason' ? neg : 0,
-        });
-      }
-
-      if (wantsStream && batchSizes.length > 1 && bIdx < batchSizes.length - 1 && !res.writableEnded && !clientAborted) {
-        res.write(JSON.stringify({ type: 'batch', data: buildPayload() }) + '\n');
-      }
+    // Compute starting question number for each batch upfront so concurrent execution stays numbered cleanly
+    const batchOffsets: number[] = [];
+    let runningOffset = 1;
+    for (const sz of batchSizes) {
+      batchOffsets.push(runningOffset);
+      runningOffset += sz;
     }
+
+    const CONCURRENCY = Math.min(2, batchSizes.length);
+    let nextBatchIdx = 0;
+
+    const runWorker = async () => {
+      while (!clientAborted) {
+        const bIdx = nextBatchIdx++;
+        if (bIdx >= batchSizes.length) break;
+
+        const batchSize = batchSizes[bIdx];
+        const startNum = batchOffsets[bIdx];
+        const angle = batchSizes.length > 1 ? batchAngles[bIdx % batchAngles.length] : undefined;
+        const prompt = buildPedagogicalPrompt(body, batchSize, startNum, angle);
+        const batchLabel =
+          batchSizes.length > 1
+            ? `Batch ${bIdx + 1}/${batchSizes.length} (Q${startNum}–Q${startNum + batchSize - 1})`
+            : undefined;
+
+        const parsed = await callAiWithRetry<{
+          title?: string;
+          subtitle?: string;
+          questions?: Record<string, unknown>[];
+        }>(
+          ai,
+          prompt,
+          dppResponseSchema,
+          (msg) => {
+            if (wantsStream && !res.writableEnded && !clientAborted) {
+              res.write(
+                JSON.stringify({
+                  type: 'progress',
+                  message: batchLabel ? `${batchLabel}: ${msg}` : msg,
+                }) + '\n',
+              );
+            }
+          },
+          {
+            aiMode,
+            aiProvider,
+            signal: controller.signal,
+            validate: (data) => Array.isArray(data?.questions) && data.questions.length > 0,
+          },
+        );
+
+        if (clientAborted) break;
+
+        if (!sheetTitle && parsed.title) sheetTitle = parsed.title;
+        if (!sheetSubtitle && parsed.subtitle) sheetSubtitle = parsed.subtitle;
+
+        const normalizedBatch = (parsed.questions || [])
+          .slice(0, batchSize)
+          .map((q, i) => normalizeQuestion(q, startNum + i, marks, neg, allowedTypes));
+
+        batchResults[bIdx] = normalizedBatch;
+        completedBatches++;
+
+        if (
+          wantsStream &&
+          batchSizes.length > 1 &&
+          completedBatches < batchSizes.length &&
+          !res.writableEnded &&
+          !clientAborted
+        ) {
+          res.write(JSON.stringify({ type: 'batch', data: buildPayload() }) + '\n');
+        }
+      }
+    };
+
+    await Promise.all(Array.from({ length: CONCURRENCY }, () => runWorker()));
 
     if (heartbeat) clearInterval(heartbeat);
     if (clientAborted) {
@@ -735,6 +967,9 @@ app.post('/api/dpp/generate', async (req, res) => {
     }
 
     const payload = buildPayload();
+    if (!payload.questions.length) {
+      throw new Error('No questions returned by AI provider.');
+    }
 
     if (wantsStream) {
       res.write(JSON.stringify({ type: 'result', data: payload }) + '\n');
@@ -743,12 +978,12 @@ app.post('/api/dpp/generate', async (req, res) => {
     return res.json(payload);
   } catch (err: unknown) {
     if (heartbeat) clearInterval(heartbeat);
-    if (clientAborted) {
+    if (clientAborted || (err instanceof Error && err.message === 'ABORTED')) {
       return;
     }
     console.error('Error generating DPP:', err);
     const cleanMsg = extractCleanErrorMessage(err);
-    const isAuthErr = /API_KEY_INVALID|PERMISSION_DENIED|GEMINI_API_KEY is not configured/i.test(
+    const isAuthErr = /API_KEY_INVALID|PERMISSION_DENIED|No AI API key|GROQ_API_KEY is not configured/i.test(
       err instanceof Error ? err.message : '',
     );
 
@@ -764,51 +999,92 @@ app.post('/api/dpp/generate', async (req, res) => {
 });
 
 app.post('/api/dpp/regenerate-question', async (req, res) => {
+  const controller = new AbortController();
+  res.on('close', () => {
+    if (!res.writableFinished && !res.writableEnded) {
+      controller.abort();
+    }
+  });
+
   try {
-    const { metadata, existingQuestion, forceDiagram, customInstructions, aiMode } = req.body;
+    const { metadata, existingQuestion, forceDiagram, customInstructions, aiMode, aiProvider } = req.body;
     if (!metadata || !existingQuestion) {
       return res.status(400).json({ error: 'Missing metadata or existingQuestion.' });
     }
 
     const ai = getAiClient();
-    const prompt = `Regenerate ONE fresh, completely different, mathematically verified question (keeping the exact same question number ${existingQuestion.number} and type "${existingQuestion.type}") for:
-- Class ${metadata.classLevel} (${metadata.boardOrExam} / ${metadata.tierOrLevel})
-- Subject: ${metadata.subject}
+    const prompt = `Regenerate ONE fresh, different, mathematically verified question (number ${existingQuestion.number}, type "${existingQuestion.type}") for:
+- Class ${metadata.classLevel} (${metadata.boardOrExam} / ${metadata.tierOrLevel}) · ${metadata.subject}
 - Chapter: ${metadata.chapter}
-- EXACT LOCKED TOPIC (100% STRICT): "${metadata.topic}" (The regenerated question MUST strictly test ONLY "${metadata.topic}" — zero drift to any other topic!)
+- EXACT LOCKED TOPIC (100% STRICT): "${metadata.topic}" (Zero drift to any other topic!)
 - Medium: ${metadata.medium}
-- Reference Books: ${(metadata.referenceBooks || []).join(', ')}
-- Diagram Requirement: ${forceDiagram ? 'MUST include a clean diagram (either SMILES/reaction for organic chemistry or crisp <svg viewBox="0 0 360 200"> with stroke="currentColor" for Physics/Math/Biology).' : 'Include a diagram if conceptually helpful.'}
+- Books: ${(metadata.referenceBooks || []).join(', ')}
+- Diagram: ${forceDiagram ? 'Include a crisp diagram (SMILES/reaction for organic chemistry or <svg viewBox="0 0 360 190"> with stroke="currentColor" for Physics/Math/Bio).' : 'Include diagram if helpful.'}
 ${customInstructions ? `- Teacher Instruction: ${customInstructions}` : ''}
+Do NOT repeat: "${existingQuestion.stem}"
+Verify algebra, units, and options. Use $...$ LaTeX / $\\ce{...}$ and return JSON.`;
 
-Do NOT repeat this previous stem: "${existingQuestion.stem}"
-Verify algebra, units, and options internally. Use standard LaTeX ($...$ / $$...$$ / $\\ce{...}$) and return JSON matching the schema.`;
-
-    const parsed = await callGeminiWithRetry<Record<string, unknown>>(ai, prompt, questionSchema, undefined, {
+    const parsed = await callAiWithRetry<Record<string, unknown>>(ai, prompt, questionSchema, undefined, {
       aiMode: aiMode === 'deep' ? 'deep' : 'fast',
+      aiProvider: aiProvider === 'groq' || aiProvider === 'gemini' ? aiProvider : 'auto',
       isSingleQuestion: true,
-      validate: (q) => Boolean(q && q.stem && q.correctAnswer),
+      signal: controller.signal,
+      validate: (q) => Boolean(q && q.stem && q.correctAnswer != null),
     });
-    return res.json({
-      ...parsed,
-      id: `q-${Date.now()}-${existingQuestion.number}`,
-      number: existingQuestion.number,
-      marks: existingQuestion.marks,
-      negativeMarks: existingQuestion.negativeMarks,
-    });
+
+    const normalized = normalizeQuestion(
+      parsed,
+      Number(existingQuestion.number) || 1,
+      Number(existingQuestion.marks) || 4,
+      Number(existingQuestion.negativeMarks) || 0,
+      [String(existingQuestion.type || 'mcq')],
+    );
+    return res.json(normalized);
   } catch (err: unknown) {
+    if (err instanceof Error && err.message === 'ABORTED') return;
     console.error('Error regenerating question:', err);
     return res.status(500).json({ error: extractCleanErrorMessage(err) });
   }
 });
 
 app.post('/api/dpp/refine', async (req, res) => {
-  try {
-    const { dpp, instruction, aiMode } = req.body;
-    if (!dpp || !Array.isArray(dpp.questions) || !instruction?.trim()) {
-      return res.status(400).json({ error: 'Existing DPP and refinement instruction are required.' });
-    }
+  const { dpp, instruction, aiMode, aiProvider } = req.body || {};
+  if (!dpp || !Array.isArray(dpp.questions) || !instruction?.trim()) {
+    return res.status(400).json({ error: 'Existing DPP and refinement instruction are required.' });
+  }
 
+  const wantsStream = req.headers.accept?.includes('application/x-ndjson');
+  const controller = new AbortController();
+  let heartbeat: ReturnType<typeof setInterval> | null = null;
+  let clientAborted = false;
+
+  res.on('close', () => {
+    if (!res.writableFinished && !res.writableEnded) {
+      clientAborted = true;
+      controller.abort();
+    }
+    if (heartbeat) {
+      clearInterval(heartbeat);
+      heartbeat = null;
+    }
+  });
+
+  if (wantsStream) {
+    res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.status(200);
+    res.flushHeaders?.();
+    res.write(JSON.stringify({ type: 'progress', message: 'Applying AI refinement...' }) + '\n');
+
+    heartbeat = setInterval(() => {
+      if (!res.writableEnded && !clientAborted) {
+        res.write(JSON.stringify({ type: 'ping' }) + '\n');
+      }
+    }, 2000);
+  }
+
+  try {
     const ai = getAiClient();
     const compactQuestions = dpp.questions.map((q: Record<string, unknown>) => ({
       number: q.number,
@@ -824,61 +1100,78 @@ app.post('/api/dpp/refine', async (req, res) => {
       solutionSteps: q.solutionSteps,
     }));
 
-    const prompt = `You are a Principal Indian Academic Editor & Paper-Setter.
-Modify the existing DPP sheet below STRICTLY according to the Teacher's Refinement Instruction.
-
-TEACHER'S REFINEMENT INSTRUCTION:
-"${instruction.trim()}"
-
-METADATA:
-- Class: ${dpp.metadata?.classLevel} (${dpp.metadata?.boardOrExam} · ${dpp.metadata?.tierOrLevel})
-- Subject: ${dpp.metadata?.subject}
-- Chapter: ${dpp.metadata?.chapter}
-- Topic: ${dpp.metadata?.topic}
-- Medium: ${dpp.metadata?.medium}
-
+    const prompt = `Modify this existing DPP sheet strictly according to the Teacher's Instruction.
+TEACHER INSTRUCTION: "${instruction.trim()}"
+SPEC: Class ${dpp.metadata?.classLevel} (${dpp.metadata?.boardOrExam}) · ${dpp.metadata?.subject} · ${dpp.metadata?.chapter} · Topic: ${dpp.metadata?.topic} · Medium: ${dpp.metadata?.medium}
 RULES:
-1. Keep the same question count (${compactQuestions.length}) unless the instruction explicitly asks to change it.
-2. Preserve crisp LaTeX ($...$ / $$...$$ / $\\ce{...}$), valid SMILES for organic chemistry, and clean <svg viewBox="0 0 360 200"> with stroke="currentColor" for diagrams.
-3. Verify every answer key and step-by-step solution after modifying.
-4. Return the complete updated DPP JSON matching the schema.
+1. Keep exact question count (${compactQuestions.length}) unless asked otherwise.
+2. Preserve LaTeX ($...$ / $\\ce{...}$), valid SMILES, and compact <svg viewBox="0 0 360 190"> diagrams.
+3. Verify answer keys & solutionSteps after modifying. Return complete JSON matching schema.
 
-CURRENT QUESTIONS JSON:
+CURRENT SHEET:
 ${JSON.stringify({ title: dpp.title, subtitle: dpp.subtitle, questions: compactQuestions })}`;
 
-    const parsed = await callGeminiWithRetry<{
+    const parsed = await callAiWithRetry<{
       title?: string;
       subtitle?: string;
       questions?: Record<string, unknown>[];
-    }>(ai, prompt, dppResponseSchema, undefined, {
-      aiMode: aiMode === 'deep' ? 'deep' : 'fast',
-      validate: (data) => Array.isArray(data?.questions) && data.questions.length > 0,
-    });
+    }>(
+      ai,
+      prompt,
+      dppResponseSchema,
+      (msg) => {
+        if (wantsStream && !res.writableEnded && !clientAborted) {
+          res.write(JSON.stringify({ type: 'progress', message: msg }) + '\n');
+        }
+      },
+      {
+        aiMode: aiMode === 'deep' ? 'deep' : 'fast',
+        aiProvider: aiProvider === 'groq' || aiProvider === 'gemini' ? aiProvider : 'auto',
+        signal: controller.signal,
+        validate: (data) => Array.isArray(data?.questions) && data.questions.length > 0,
+      },
+    );
+
+    if (heartbeat) clearInterval(heartbeat);
+    if (clientAborted) return;
 
     const updatedQuestions = (parsed.questions || []).map((q, idx) => {
       const orig = dpp.questions[idx] || dpp.questions[0] || {};
-      return {
-        ...q,
-        id: `q-${Date.now()}-${idx + 1}`,
-        number: idx + 1,
-        marks: Number(orig.marks) || 4,
-        negativeMarks:
-          q.type === 'mcq' || q.type === 'multiple_correct' || q.type === 'assertion_reason'
-            ? Number(orig.negativeMarks) || 0
-            : 0,
-      };
+      return normalizeQuestion(
+        q,
+        idx + 1,
+        Number(orig.marks) || 4,
+        Number(orig.negativeMarks) || 0,
+        [String(orig.type || q.type || 'mcq')],
+      );
     });
 
-    return res.json({
+    const resultPayload = {
       ...dpp,
       title: parsed.title || dpp.title,
       subtitle: parsed.subtitle || dpp.subtitle,
       isStarterPreview: false,
       questions: updatedQuestions,
-    });
+    };
+
+    if (wantsStream) {
+      res.write(JSON.stringify({ type: 'result', data: resultPayload }) + '\n');
+      return res.end();
+    }
+    return res.json(resultPayload);
   } catch (err: unknown) {
+    if (heartbeat) clearInterval(heartbeat);
+    if (clientAborted || (err instanceof Error && err.message === 'ABORTED')) return;
     console.error('Error refining DPP:', err);
-    return res.status(500).json({ error: extractCleanErrorMessage(err) });
+    const cleanMsg = extractCleanErrorMessage(err);
+    if (wantsStream) {
+      if (!res.writableEnded) {
+        res.write(JSON.stringify({ type: 'error', error: cleanMsg }) + '\n');
+        res.end();
+      }
+      return;
+    }
+    return res.status(500).json({ error: cleanMsg });
   }
 });
 

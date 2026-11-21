@@ -16,6 +16,12 @@ interface SavedDppEntry {
   doc: DppDocument;
 }
 
+function isValidDppDocument(val: unknown): val is DppDocument {
+  if (!val || typeof val !== 'object') return false;
+  const doc = val as Record<string, unknown>;
+  return Boolean(doc.metadata && typeof doc.metadata === 'object' && Array.isArray(doc.questions));
+}
+
 function mergeTextStyle(
   saved: Partial<TextStyleConfig> | undefined,
   fallback: TextStyleConfig,
@@ -97,13 +103,42 @@ export default function App() {
     marksPerQuestion: 4,
     negativeMarks: 1,
     aiMode: 'fast',
+    aiProvider: 'auto',
     customInstructions: '',
   });
+
+  const [providers, setProviders] = useState<{ gemini: boolean; groq: boolean }>({
+    gemini: true,
+    groq: false,
+  });
+
+  useEffect(() => {
+    let active = true;
+    fetch('/api/health')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (active && data?.providers) {
+          setProviders({
+            gemini: Boolean(data.providers.gemini),
+            groq: Boolean(data.providers.groq),
+          });
+        }
+      })
+      .catch(() => {
+        // Ignore silent cold-start warm-up error
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const [dpp, setDpp] = useState<DppDocument>(() => {
     try {
       const saved = localStorage.getItem(ACTIVE_DPP_STORAGE_KEY);
-      if (saved) return JSON.parse(saved) as DppDocument;
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (isValidDppDocument(parsed)) return parsed;
+      }
     } catch {
       // Ignore storage error
     }
@@ -113,7 +148,12 @@ export default function App() {
   const [history, setHistory] = useState<SavedDppEntry[]>(() => {
     try {
       const saved = localStorage.getItem(HISTORY_DPP_STORAGE_KEY);
-      if (saved) return JSON.parse(saved) as SavedDppEntry[];
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          return parsed.filter((entry) => entry && isValidDppDocument(entry.doc));
+        }
+      }
     } catch {
       // Ignore storage error
     }
@@ -153,6 +193,7 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(45000),
       });
 
       const text = await res.text();
@@ -168,7 +209,7 @@ export default function App() {
       }
 
       if ((res.status === 502 || res.status === 503 || res.status === 504) && attempt < retries) {
-        await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+        await new Promise((r) => setTimeout(r, 1200 * (attempt + 1)));
         continue;
       }
 
@@ -179,6 +220,78 @@ export default function App() {
       throw new Error(errText);
     }
     throw new Error('Request failed after retries.');
+  };
+
+  const readNdjsonStream = async (
+    res: Response,
+    controller: AbortController,
+    onEvent: (evt: {
+      type: 'progress' | 'ping' | 'batch' | 'result' | 'error';
+      message?: string;
+      data?: DppDocument;
+      error?: string;
+    }) => void,
+    inactivityTimeoutMs = 45000,
+  ) => {
+    if (!res.body) {
+      throw new Error('Empty response stream.');
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    const processLine = (rawLine: string) => {
+      const trimmed = rawLine.trim();
+      if (!trimmed) return;
+      let evt: {
+        type: 'progress' | 'ping' | 'batch' | 'result' | 'error';
+        message?: string;
+        data?: DppDocument;
+        error?: string;
+      };
+      try {
+        evt = JSON.parse(trimmed);
+      } catch {
+        return;
+      }
+      onEvent(evt);
+    };
+
+    try {
+      while (true) {
+        let timeoutId: ReturnType<typeof setTimeout> | undefined;
+        const readResult = await Promise.race([
+          reader.read(),
+          new Promise<never>((_, reject) => {
+            timeoutId = setTimeout(() => {
+              controller.abort();
+              reject(new Error('Connection stalled (no server update for 45s). Please click Retry.'));
+            }, inactivityTimeoutMs);
+          }),
+        ]).finally(() => {
+          if (timeoutId) clearTimeout(timeoutId);
+        });
+
+        if (readResult.done) {
+          buffer += decoder.decode();
+          if (buffer.trim()) {
+            for (const tailLine of buffer.split('\n')) {
+              processLine(tailLine);
+            }
+          }
+          break;
+        }
+
+        buffer += decoder.decode(readResult.value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          processLine(line);
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
   };
 
   const handleCancelGenerate = () => {
@@ -197,7 +310,9 @@ export default function App() {
     setErrorMsg(null);
     setIsGenerating(true);
     setHasPartialBatch(false);
-    setProgressMsg('Connecting to PYQ paper-setter...');
+    setProgressMsg('Connecting to fast paper-setter...');
+
+    let latestPartial: DppDocument | null = null;
 
     try {
       let generated: DppDocument | null = null;
@@ -215,7 +330,7 @@ export default function App() {
 
         if (!res.ok) {
           if ((res.status === 502 || res.status === 503 || res.status === 504) && attempt < 2) {
-            setProgressMsg('Server busy, retrying automatically...');
+            setProgressMsg('Waking server & retrying automatically...');
             await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
             continue;
           }
@@ -236,57 +351,40 @@ export default function App() {
           break;
         }
 
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() ?? '';
-
-          for (const line of lines) {
-            if (!line.trim()) continue;
-            const evt = JSON.parse(line) as {
-              type: 'progress' | 'ping' | 'batch' | 'result' | 'error';
-              message?: string;
-              data?: DppDocument;
-              error?: string;
-            };
-            if (evt.type === 'progress' && evt.message) {
-              setProgressMsg(evt.message);
-            } else if (evt.type === 'batch' && evt.data) {
-              setDpp(evt.data);
-              setHasPartialBatch(true);
-              setDocMode('questions');
-            } else if (evt.type === 'result' && evt.data) {
-              generated = evt.data;
-            } else if (evt.type === 'error') {
-              throw new Error(evt.error || 'Failed to generate DPP.');
-            }
+        await readNdjsonStream(res, controller, (evt) => {
+          if (evt.type === 'progress' && evt.message) {
+            setProgressMsg(evt.message);
+          } else if (evt.type === 'batch' && evt.data) {
+            latestPartial = evt.data;
+            setDpp(evt.data);
+            setHasPartialBatch(true);
+            setDocMode('questions');
+          } else if (evt.type === 'result' && evt.data) {
+            generated = evt.data;
+          } else if (evt.type === 'error') {
+            throw new Error(evt.error || 'Failed to generate DPP.');
           }
-        }
+        });
         break;
       }
 
       if (controller.signal.aborted) return;
-      if (!generated) {
+      const finalDoc = generated || latestPartial;
+      if (!finalDoc || !Array.isArray(finalDoc.questions) || finalDoc.questions.length === 0) {
         throw new Error('No DPP payload received from server.');
       }
-      setDpp(generated);
+      setDpp(finalDoc);
       setHistory((prev) => {
         const entry: SavedDppEntry = {
           id: `sheet-${Date.now()}`,
-          label: `Class ${generated.metadata.classLevel} ${generated.metadata.subject} · ${generated.metadata.topic} (${generated.questions.length} Qs)`,
-          doc: generated,
+          label: `Class ${finalDoc.metadata.classLevel} ${finalDoc.metadata.subject} · ${finalDoc.metadata.topic} (${finalDoc.questions.length} Qs)`,
+          doc: finalDoc,
         };
         return [entry, ...prev].slice(0, 8);
       });
       setDocMode('questions');
     } catch (err: unknown) {
-      if ((err as { name?: string })?.name === 'AbortError') {
+      if ((err as { name?: string })?.name === 'AbortError' && !err?.toString().includes('stalled')) {
         return;
       }
       setErrorMsg(err instanceof Error ? err.message : 'Unable to generate DPP.');
@@ -303,14 +401,53 @@ export default function App() {
   const handleRefineDpp = async (overrideInstruction?: string) => {
     const instruction = (overrideInstruction ?? refineInstruction).trim();
     if (!instruction || isRefining || isGenerating) return;
+    const controller = new AbortController();
     setErrorMsg(null);
     setIsRefining(true);
     try {
-      const updated = (await postJsonWithRetry('/api/dpp/refine', {
-        dpp,
-        instruction,
-        aiMode: form.aiMode,
-      })) as unknown as DppDocument;
+      const res = await fetch('/api/dpp/refine', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/x-ndjson',
+        },
+        body: JSON.stringify({
+          dpp,
+          instruction,
+          aiMode: form.aiMode,
+          aiProvider: form.aiProvider || 'auto',
+        }),
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        const txt = await res.text();
+        let errJson: { error?: string } = {};
+        try {
+          errJson = JSON.parse(txt);
+        } catch {
+          // ignore
+        }
+        throw new Error(errJson.error || `Refine failed (${res.status}).`);
+      }
+
+      const contentType = res.headers.get('content-type') || '';
+      let updated: DppDocument | null = null;
+      if (!contentType.includes('ndjson') || !res.body) {
+        updated = (await res.json()) as DppDocument;
+      } else {
+        await readNdjsonStream(res, controller, (evt) => {
+          if (evt.type === 'result' && evt.data) {
+            updated = evt.data;
+          } else if (evt.type === 'error') {
+            throw new Error(evt.error || 'Unable to refine DPP.');
+          }
+        });
+      }
+
+      if (!updated) {
+        throw new Error('No refined DPP returned by server.');
+      }
       setDpp(updated);
       setRefineInstruction('');
     } catch (err: unknown) {
@@ -330,6 +467,7 @@ export default function App() {
         forceDiagram,
         customInstructions: form.customInstructions,
         aiMode: form.aiMode,
+        aiProvider: form.aiProvider || 'auto',
       })) as unknown as DppQuestion;
       setDpp((prev) => ({
         ...prev,
@@ -459,6 +597,7 @@ export default function App() {
           onGenerate={handleGenerate}
           onCancelGenerate={handleCancelGenerate}
           isGenerating={isGenerating}
+          providers={providers}
         />
 
         {/* Right Live A4 Preview & Separate PDF Workspace */}

@@ -18,9 +18,12 @@ export const MoleculeSvg: React.FC<SingleMoleculeProps> = ({
   maxWidth = 175,
   maxHeight = 125,
 }) => {
+  const cleanSmiles = typeof smiles === 'string' ? smiles.trim() : '';
+
   const svgMarkup = useMemo(() => {
+    if (!cleanSmiles) return null;
     try {
-      const mol = Molecule.fromSmiles(smiles.trim());
+      const mol = Molecule.fromSmiles(cleanSmiles);
       mol.inventCoordinates();
       let svg = mol.toSVG(maxWidth, maxHeight, undefined, {
         autoCrop: true,
@@ -46,7 +49,11 @@ export const MoleculeSvg: React.FC<SingleMoleculeProps> = ({
     } catch {
       return null;
     }
-  }, [smiles, color, strokeWidth, maxWidth, maxHeight]);
+  }, [cleanSmiles, color, strokeWidth, maxWidth, maxHeight]);
+
+  if (!cleanSmiles) {
+    return null;
+  }
 
   if (!svgMarkup) {
     return (
@@ -54,7 +61,7 @@ export const MoleculeSvg: React.FC<SingleMoleculeProps> = ({
         className="inline-flex items-center px-3 py-1.5 border border-dashed rounded text-xs font-mono"
         style={{ borderColor: color, color }}
       >
-        {smiles}
+        {cleanSmiles}
       </div>
     );
   }
@@ -79,14 +86,21 @@ export const ChemistryReactionView: React.FC<ReactionSchemeProps> = ({
   color,
   strokeWidth,
 }) => {
+  const reactants = Array.isArray(reaction?.reactants)
+    ? reaction.reactants.filter((s) => typeof s === 'string' && s.trim().length > 0)
+    : [];
+  const products = Array.isArray(reaction?.products)
+    ? reaction.products.filter((s) => typeof s === 'string' && s.trim().length > 0)
+    : [];
+
   return (
     <div className="flex flex-wrap items-center justify-center gap-3 py-2 px-2">
       {/* Reactants */}
       <div className="flex items-center gap-2">
-        {(reaction.reactants || []).map((smiles, idx) => (
+        {reactants.map((smiles, idx) => (
           <React.Fragment key={idx}>
             <MoleculeSvg smiles={smiles} color={color} strokeWidth={strokeWidth} maxWidth={140} maxHeight={110} />
-            {idx < reaction.reactants.length - 1 && (
+            {idx < reactants.length - 1 && (
               <span className="font-semibold text-base" style={{ color }}>
                 +
               </span>
@@ -122,8 +136,8 @@ export const ChemistryReactionView: React.FC<ReactionSchemeProps> = ({
 
       {/* Products */}
       <div className="flex items-center gap-2">
-        {reaction.products && reaction.products.length > 0 ? (
-          reaction.products.map((smiles, idx) => (
+        {products.length > 0 ? (
+          products.map((smiles, idx) => (
             <React.Fragment key={idx}>
               <MoleculeSvg
                 smiles={smiles}
@@ -132,7 +146,7 @@ export const ChemistryReactionView: React.FC<ReactionSchemeProps> = ({
                 maxWidth={145}
                 maxHeight={110}
               />
-              {idx < reaction.products.length - 1 && (
+              {idx < products.length - 1 && (
                 <span className="font-semibold text-base" style={{ color }}>
                   +
                 </span>

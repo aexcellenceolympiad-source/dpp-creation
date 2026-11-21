@@ -92,8 +92,9 @@ function renderInlineFormatting(text: string): React.ReactNode[] {
 }
 
 export const MathText: React.FC<MathTextProps> = ({ text, className = '', style }) => {
+  const safeText = text == null ? '' : String(text);
   const renderedNodes = useMemo(() => {
-    const segments = splitMathSegments(text);
+    const segments = splitMathSegments(safeText);
     return segments.map((seg, index) => {
       if (seg.kind === 'text') {
         const lines = seg.content.split('\n');
@@ -131,7 +132,7 @@ export const MathText: React.FC<MathTextProps> = ({ text, className = '', style 
         );
       }
     });
-  }, [text]);
+  }, [safeText]);
 
   return (
     <span className={className} style={style}>
