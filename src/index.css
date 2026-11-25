@@ -73,6 +73,15 @@
     display: none !important;
   }
 
+  .print-workspace-root,
+  .print-workspace-main,
+  .print-scroll-area {
+    display: block !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+
   .print-container {
     margin: 0 !important;
     padding: 0 !important;
@@ -106,6 +115,7 @@
     border: none !important;
     outline: none !important;
     padding: 0 !important;
+    overflow: visible !important;
   }
 
   .print-spacer-table {

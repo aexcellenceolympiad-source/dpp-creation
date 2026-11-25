@@ -252,6 +252,12 @@ export const DEFAULT_STYLE_CONFIG: DppStyleConfig = {
   showWatermark: false,
   watermarkOpacity: 8,
   questionSpacing: 14,
+  mcqOptionsLayout: 0,
+  letterSpacing: 0,
+  wordSpacing: 0,
+  lineHeight: 1.5,
+  paragraphSpacing: 12,
+  pageMarginMm: 6,
 
   headerMetaStyle: {
     color: '#334155',

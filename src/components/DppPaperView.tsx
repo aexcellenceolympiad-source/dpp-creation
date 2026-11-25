@@ -79,6 +79,15 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
   const paperMinHeightMm = isLandscape ? 210 : 297;
   const borderCss = getBorderCss(styleConfig);
 
+  const letterSpacingPx = Number.isFinite(styleConfig.letterSpacing) ? styleConfig.letterSpacing : 0;
+  const wordSpacingPx = Number.isFinite(styleConfig.wordSpacing) ? styleConfig.wordSpacing : 0;
+  const lineHeightVal = Number.isFinite(styleConfig.lineHeight) ? styleConfig.lineHeight : 1.5;
+  const paraGapPx = Number.isFinite(styleConfig.paragraphSpacing)
+    ? styleConfig.paragraphSpacing
+    : styleConfig.questionSpacing ?? 12;
+  const marginMm = Number.isFinite(styleConfig.pageMarginMm) ? styleConfig.pageMarginMm : 6;
+  const mcqLayout = Number.isFinite(styleConfig.mcqOptionsLayout) ? styleConfig.mcqOptionsLayout : 0;
+
   const startEdit = (q: DppQuestion) => {
     setEditingId(q.id);
     setDraftStem(q.stem);
@@ -171,12 +180,16 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
 
       {/* Screen + Print A4 Sheet (0mm outer padding so border sits right on page edge) */}
       <div
+        id="dpp-export-sheet"
         className="print-a4-sheet relative shadow-lg transition-transform duration-150 origin-top box-border"
         style={{
           width: `${paperWidthMm}mm`,
           minHeight: `${paperMinHeightMm}mm`,
           backgroundColor: styleConfig.pageColor,
           fontFamily: `'${styleConfig.paperFontFamily}', 'Noto Sans Devanagari', serif`,
+          letterSpacing: `${letterSpacingPx}px`,
+          wordSpacing: `${wordSpacingPx}px`,
+          lineHeight: lineHeightVal,
           transform: `scale(${zoom / 100})`,
           marginBottom: zoom !== 100 ? `${((zoom - 100) / 100) * 650}px` : undefined,
           padding: 0,
@@ -184,9 +197,13 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
       >
         {/* Screen Outer Edge-Flush Border Frame */}
         <div
-          className="print-screen-frame relative w-full box-border flex flex-col justify-between p-6 sm:p-7 overflow-hidden"
+          className="print-screen-frame relative w-full box-border flex flex-col justify-between overflow-hidden"
           style={{
             minHeight: `${paperMinHeightMm}mm`,
+            paddingTop: `${marginMm}mm`,
+            paddingBottom: `${Math.max(0, Math.round(marginMm * 0.5))}mm`,
+            paddingLeft: 0,
+            paddingRight: 0,
             ...borderCss,
           }}
         >
@@ -236,16 +253,23 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
           <table className="print-spacer-table w-full border-collapse">
             <thead className="print-spacer-head hidden print:table-header-group">
               <tr>
-                <td style={{ height: '7mm' }} />
+                <td style={{ height: `${marginMm}mm` }} />
               </tr>
             </thead>
             <tbody>
               <tr>
-                <td className="p-0 print:px-[8mm] align-top">
+                <td
+                  className="print-content-cell p-0 align-top"
+                  style={{ paddingLeft: `${marginMm}mm`, paddingRight: `${marginMm}mm` }}
+                >
                   {/* Branding & Header */}
                   <header
-                    className="pb-3 mb-4 text-center"
-                    style={{ borderBottom: `1.5px solid ${styleConfig.borderColor}` }}
+                    className="text-center"
+                    style={{
+                      borderBottom: `1.5px solid ${styleConfig.borderColor}`,
+                      paddingBottom: `${Math.max(4, Math.round(paraGapPx * 0.75))}px`,
+                      marginBottom: `${Math.max(4, paraGapPx)}px`,
+                    }}
                   >
                     <div className="tracking-wide leading-tight" style={toTextCss(styleConfig.brandStyle)}>
                       {styleConfig.brandName || 'SAFAL ACADEMY LIVE'}
@@ -333,13 +357,15 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                         const stemStyle = isSubjective
                           ? toTextCss(styleConfig.subjectiveStyle)
                           : toTextCss(styleConfig.questionStyle);
-                        const gapPx = styleConfig.questionSpacing ?? 14;
 
                         return (
                           <article
                             key={q.id}
                             className="question-block-avoid-break group relative break-inside-avoid min-w-0 max-w-full border-b border-slate-200/70 last:border-b-0"
-                            style={{ marginBottom: `${gapPx}px`, paddingBottom: `${Math.max(8, gapPx - 2)}px` }}
+                            style={{
+                              marginBottom: `${paraGapPx}px`,
+                              paddingBottom: `${Math.max(2, Math.round(paraGapPx * 0.55))}px`,
+                            }}
                           >
                             {/* Inline Teacher Controls (hidden on PDF print) */}
                             <div className="no-print opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity absolute -top-1 right-0 flex items-center gap-1 bg-white/95 border border-slate-200 rounded px-1.5 py-0.5 shadow-xs z-10">
@@ -508,23 +534,34 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                                 </div>
                               </div>
                             ) : (
-                              <div className="leading-relaxed" style={stemStyle}>
+                              <div style={{ ...stemStyle, lineHeight: lineHeightVal }}>
                                 <MathText text={q.stem} />
                               </div>
                             )}
 
                             {/* Assertion & Reason Block */}
                             {q.type === 'assertion_reason' && (q.assertion || q.reason) && (
-                              <div className="mt-2 space-y-1.5 pl-3">
+                              <div
+                                className="pl-3"
+                                style={{
+                                  marginTop: `${Math.max(2, Math.round(paraGapPx * 0.45))}px`,
+                                  display: 'flex',
+                                  flexDirection: 'column',
+                                  gap: `${Math.max(1, Math.round(paraGapPx * 0.3))}px`,
+                                }}
+                              >
                                 {q.assertion && (
                                   <div
-                                    style={toTextCss(styleConfig.assertionStyle, {
-                                      color: styleConfig.assertionColor || '#7C2D12',
-                                      fontSize: styleConfig.questionStyle.fontSize,
-                                      bold: false,
-                                      italic: false,
-                                      underline: false,
-                                    })}
+                                    style={{
+                                      ...toTextCss(styleConfig.assertionStyle, {
+                                        color: styleConfig.assertionColor || '#7C2D12',
+                                        fontSize: styleConfig.questionStyle.fontSize,
+                                        bold: false,
+                                        italic: false,
+                                        underline: false,
+                                      }),
+                                      lineHeight: lineHeightVal,
+                                    }}
                                   >
                                     <span className="font-bold">Assertion (A): </span>
                                     <MathText text={q.assertion} />
@@ -532,13 +569,16 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                                 )}
                                 {q.reason && (
                                   <div
-                                    style={toTextCss(styleConfig.reasonStyle, {
-                                      color: styleConfig.reasonColor || '#1E40AF',
-                                      fontSize: styleConfig.questionStyle.fontSize,
-                                      bold: false,
-                                      italic: false,
-                                      underline: false,
-                                    })}
+                                    style={{
+                                      ...toTextCss(styleConfig.reasonStyle, {
+                                        color: styleConfig.reasonColor || '#1E40AF',
+                                        fontSize: styleConfig.questionStyle.fontSize,
+                                        bold: false,
+                                        italic: false,
+                                        underline: false,
+                                      }),
+                                      lineHeight: lineHeightVal,
+                                    }}
                                   >
                                     <span className="font-bold">Reason (R): </span>
                                     <MathText text={q.reason} />
@@ -625,23 +665,31 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                               q.type !== 'subjective' &&
                               q.type !== 'fill_blank' && (
                                 <div
-                                  className={`mt-2.5 grid gap-x-4 gap-y-1.5 ${
-                                    q.options.some((o) => {
-                                      const t = o.text || '';
-                                      return o.smiles || t.length > 22 || /[=\\]frac|\\sqrt/.test(t);
-                                    })
-                                      ? 'grid-cols-1 sm:grid-cols-2'
-                                      : 'grid-cols-2 sm:grid-cols-4'
+                                  className={`grid ${
+                                    mcqLayout === 2
+                                      ? 'mcq-options-grid-4 grid-cols-4 gap-x-1 gap-y-0.5'
+                                      : mcqLayout === 1
+                                        ? 'grid-cols-2 gap-x-3 gap-y-1'
+                                        : q.options.some((o) => {
+                                              const t = o.text || '';
+                                              return o.smiles || t.length > 22 || /[=\\]frac|\\sqrt/.test(t);
+                                            })
+                                          ? 'grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5'
+                                          : 'grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-1.5'
                                   }`}
+                                  style={{ marginTop: `${Math.max(1, Math.round(paraGapPx * 0.45))}px` }}
                                 >
                                   {q.options.map((opt) => (
                                     <div
                                       key={opt.label}
-                                      className="flex items-start gap-1.5 leading-snug"
-                                      style={toTextCss(styleConfig.optionStyle)}
+                                      className="flex items-start gap-1 min-w-0"
+                                      style={{
+                                        ...toTextCss(styleConfig.optionStyle),
+                                        lineHeight: lineHeightVal,
+                                      }}
                                     >
                                       <span className="font-semibold shrink-0">({opt.label})</span>
-                                      <div className="flex flex-col gap-1">
+                                      <div className="flex flex-col gap-0.5 min-w-0">
                                         <MathText text={opt.text} />
                                         {opt.smiles && (
                                           <MoleculeSvg
@@ -672,7 +720,7 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
 
                   {/* ANSWER KEY & SOLUTIONS SEPARATE PDF MODE */}
                   {mode === 'answers' && (
-                    <div className="space-y-5">
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: `${Math.max(6, paraGapPx)}px` }}>
                       <section>
                         <h2
                           className="text-sm font-bold uppercase tracking-wider mb-2"
@@ -740,7 +788,11 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                           {questions.map((q) => (
                             <article
                               key={q.id}
-                              className="question-block-avoid-break break-inside-avoid mb-4 pb-3 border-b border-slate-200/70 last:border-b-0"
+                              className="question-block-avoid-break break-inside-avoid border-b border-slate-200/70 last:border-b-0"
+                              style={{
+                                marginBottom: `${paraGapPx}px`,
+                                paddingBottom: `${Math.max(2, Math.round(paraGapPx * 0.55))}px`,
+                              }}
                             >
                               <div className="flex flex-wrap items-baseline justify-between gap-2 mb-1">
                                 <span
@@ -767,14 +819,20 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                               )}
 
                               <ol
-                                className="list-decimal pl-5 space-y-1 leading-relaxed mt-1"
-                                style={toTextCss(styleConfig.solutionStyle, {
-                                  color: styleConfig.optionStyle.color,
-                                  fontSize: Math.max(11.5, styleConfig.questionStyle.fontSize - 0.5),
-                                  bold: false,
-                                  italic: false,
-                                  underline: false,
-                                })}
+                                className="list-decimal pl-5 mt-1"
+                                style={{
+                                  ...toTextCss(styleConfig.solutionStyle, {
+                                    color: styleConfig.optionStyle.color,
+                                    fontSize: Math.max(11.5, styleConfig.questionStyle.fontSize - 0.5),
+                                    bold: false,
+                                    italic: false,
+                                    underline: false,
+                                  }),
+                                  lineHeight: lineHeightVal,
+                                  display: 'flex',
+                                  flexDirection: 'column',
+                                  gap: `${Math.max(1, Math.round(paraGapPx * 0.25))}px`,
+                                }}
                               >
                                 {(Array.isArray(q.solutionSteps) ? q.solutionSteps : []).map((step, sIdx) => (
                                   <li key={sIdx}>
@@ -793,15 +851,19 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
             </tbody>
             <tfoot className="print-spacer-foot hidden print:table-footer-group">
               <tr>
-                <td style={{ height: '7mm' }} />
+                <td style={{ height: `${marginMm}mm` }} />
               </tr>
             </tfoot>
           </table>
 
           {/* Footer */}
           <footer
-            className="mt-6 pt-2 print:px-[8mm] print:pb-[5mm] flex items-center justify-between border-t"
+            className="print-sheet-footer pt-2 flex items-center justify-between border-t"
             style={{
+              marginTop: `${Math.max(4, paraGapPx)}px`,
+              paddingLeft: `${marginMm}mm`,
+              paddingRight: `${marginMm}mm`,
+              paddingBottom: `${Math.max(2, Math.round(marginMm * 0.5))}mm`,
               borderColor: `${styleConfig.borderColor}40`,
               ...toTextCss(styleConfig.footerStyle, {
                 color: styleConfig.headerMetaStyle.color,

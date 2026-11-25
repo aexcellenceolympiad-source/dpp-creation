@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { FileText, KeyRound, Printer, ZoomIn, ZoomOut, AlertCircle, Sparkles } from 'lucide-react';
+import { Download, FileText, KeyRound, Printer, ZoomIn, ZoomOut, AlertCircle, Sparkles } from 'lucide-react';
 import { DEFAULT_STYLE_CONFIG, getChaptersForSelection, getRecommendedBooks } from './data/curriculum';
 import { STARTER_DPP } from './data/starterDpp';
 import { DppDocument, DppQuestion, DppStyleConfig, GenerateDppPayload, TextStyleConfig } from './types/dpp';
@@ -35,9 +35,20 @@ function mergeTextStyle(
 }
 
 function mergeStyleConfig(raw: Partial<DppStyleConfig>): DppStyleConfig {
+  const num = (v: unknown, fallback: number) =>
+    typeof v === 'number' && Number.isFinite(v) ? v : fallback;
+  const qSpacing = num(raw.questionSpacing, DEFAULT_STYLE_CONFIG.questionSpacing);
+
   return {
     ...DEFAULT_STYLE_CONFIG,
     ...raw,
+    questionSpacing: qSpacing,
+    mcqOptionsLayout: num(raw.mcqOptionsLayout, DEFAULT_STYLE_CONFIG.mcqOptionsLayout),
+    letterSpacing: num(raw.letterSpacing, DEFAULT_STYLE_CONFIG.letterSpacing),
+    wordSpacing: num(raw.wordSpacing, DEFAULT_STYLE_CONFIG.wordSpacing),
+    lineHeight: num(raw.lineHeight, DEFAULT_STYLE_CONFIG.lineHeight),
+    paragraphSpacing: num(raw.paragraphSpacing, qSpacing),
+    pageMarginMm: num(raw.pageMarginMm, DEFAULT_STYLE_CONFIG.pageMarginMm),
     brandStyle: mergeTextStyle(raw.brandStyle, DEFAULT_STYLE_CONFIG.brandStyle),
     subtitleStyle: mergeTextStyle(raw.subtitleStyle, DEFAULT_STYLE_CONFIG.subtitleStyle),
     headerMetaStyle: mergeTextStyle(raw.headerMetaStyle, DEFAULT_STYLE_CONFIG.headerMetaStyle),
@@ -181,6 +192,7 @@ export default function App() {
   }, [history]);
 
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isExporting, setIsExporting] = useState<'questions' | 'answers' | null>(null);
   const [isRefining, setIsRefining] = useState(false);
   const [refineInstruction, setRefineInstruction] = useState('');
   const [hasPartialBatch, setHasPartialBatch] = useState(false);
@@ -499,9 +511,16 @@ export default function App() {
     }));
   };
 
-  const handleExportPdf = (targetMode: 'questions' | 'answers') => {
-    setDocMode(targetMode);
-    const prevTitle = document.title;
+  const handleExportPdf = async (targetMode: 'questions' | 'answers') => {
+    if (isExporting) return;
+    setErrorMsg(null);
+    setIsExporting(targetMode);
+
+    const needsSwitch = docMode !== targetMode;
+    if (needsSwitch) {
+      setDocMode(targetMode);
+    }
+
     const isTest = dpp.metadata?.paperType === 'test';
     const suffix =
       targetMode === 'questions'
@@ -509,19 +528,58 @@ export default function App() {
           ? 'Test-Question-Paper'
           : 'DPP-Question-Sheet'
         : 'Answer-Key-Solutions';
-    document.title = `${styleConfig.brandName.replace(/\s+/g, '-')}-${dpp.metadata.subject}-${suffix}`;
+    const cleanBrand = (styleConfig.brandName || 'Safal-DPP').replace(/[^a-zA-Z0-9_-]+/g, '-');
+    const cleanSubj = (dpp.metadata.subject || 'Sheet').replace(/[^a-zA-Z0-9_-]+/g, '-');
+    const fileName = `${cleanBrand}-${cleanSubj}-${suffix}.pdf`;
 
-    // Wait one frame for mode switch if needed, then open print-to-PDF dialog
-    requestAnimationFrame(() => {
-      setTimeout(() => {
-        window.print();
-        document.title = prevTitle;
-      }, 120);
-    });
+    try {
+      // Wait for React mode switch + KaTeX/SVG DOM painting
+      await new Promise((resolve) =>
+        requestAnimationFrame(() => setTimeout(resolve, needsSwitch ? 180 : 60)),
+      );
+
+      const sheetEl = document.getElementById('dpp-export-sheet');
+      if (!sheetEl) {
+        throw new Error('Preview sheet not ready for export.');
+      }
+
+      const { exportDppToPdf } = await import('./utils/pdfExporter');
+      await exportDppToPdf({
+        sheetElement: sheetEl,
+        styleConfig,
+        fileName,
+        mode: targetMode,
+      });
+    } catch (err: unknown) {
+      console.error('Direct PDF export error:', err);
+      setErrorMsg(
+        err instanceof Error
+          ? `PDF export failed: ${err.message}`
+          : 'Unable to export PDF file. Try the Print button.',
+      );
+    } finally {
+      setIsExporting(null);
+    }
+  };
+
+  const handleSystemPrint = () => {
+    const prevTitle = document.title;
+    const isTest = dpp.metadata?.paperType === 'test';
+    const suffix =
+      docMode === 'questions'
+        ? isTest
+          ? 'Test-Question-Paper'
+          : 'DPP-Question-Sheet'
+        : 'Answer-Key-Solutions';
+    document.title = `${styleConfig.brandName.replace(/\s+/g, '-')}-${dpp.metadata.subject}-${suffix}`;
+    window.print();
+    setTimeout(() => {
+      document.title = prevTitle;
+    }, 500);
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-slate-100 text-slate-900">
+    <div className="print-workspace-root min-h-screen flex flex-col bg-slate-100 text-slate-900">
       {/* Dynamic @page size and full-bleed background injection for Portrait vs Landscape PDF export */}
       <style>{`@media print { @page { size: A4 ${styleConfig.orientation}; margin: 0; } html, body { background-color: ${styleConfig.pageColor} !important; } }`}</style>
 
@@ -585,17 +643,22 @@ export default function App() {
           <PWAInstallButton />
           <button
             type="button"
+            disabled={isExporting !== null}
             onClick={() => handleExportPdf(docMode)}
-            className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 disabled:bg-slate-500 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
-            <Printer className="w-3.5 h-3.5" />
-            <span>Export {docMode === 'questions' ? 'Question PDF' : 'Answer PDF'}</span>
+            <Download className={`w-3.5 h-3.5 ${isExporting ? 'animate-bounce' : ''}`} />
+            <span>
+              {isExporting
+                ? 'Exporting PDF...'
+                : `Export ${docMode === 'questions' ? 'Question PDF' : 'Answer PDF'}`}
+            </span>
           </button>
         </div>
       </header>
 
       {/* Main Split Workspace */}
-      <div className="flex-1 flex flex-col lg:flex-row">
+      <div className="print-workspace-root flex-1 flex flex-col lg:flex-row">
         <StudioSidebar
           activeTab={sidebarTab}
           onTabChange={setSidebarTab}
@@ -611,7 +674,7 @@ export default function App() {
         />
 
         {/* Right Live A4 Preview & Separate PDF Workspace */}
-        <main className="flex-1 flex flex-col min-w-0 lg:h-[calc(100vh-57px)] overflow-hidden">
+        <main className="print-workspace-main flex-1 flex flex-col min-w-0 lg:h-[calc(100vh-57px)] overflow-hidden">
           {/* Workspace Toolbar */}
           <div className="no-print bg-white border-b border-slate-200 px-4 py-2.5 flex flex-wrap items-center justify-between gap-3">
             {/* Separate PDF Switcher: Question Paper vs Answer Key PDF */}
@@ -705,17 +768,27 @@ export default function App() {
               <div className="flex items-center gap-1.5">
                 <button
                   type="button"
+                  disabled={isExporting !== null}
                   onClick={() => handleExportPdf('questions')}
-                  className="px-2.5 py-1.5 text-xs font-semibold border border-slate-300 bg-white hover:bg-slate-50 text-slate-800 rounded-md transition-colors whitespace-nowrap"
+                  className="px-2.5 py-1.5 text-xs font-semibold border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-50 text-slate-800 rounded-md transition-colors whitespace-nowrap cursor-pointer"
                 >
-                  Save Questions PDF
+                  {isExporting === 'questions' ? 'Saving...' : 'Save Questions PDF'}
                 </button>
                 <button
                   type="button"
+                  disabled={isExporting !== null}
                   onClick={() => handleExportPdf('answers')}
-                  className="px-2.5 py-1.5 text-xs font-semibold border border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-800 rounded-md transition-colors whitespace-nowrap"
+                  className="px-2.5 py-1.5 text-xs font-semibold border border-blue-200 bg-blue-50 hover:bg-blue-100 disabled:opacity-50 text-blue-800 rounded-md transition-colors whitespace-nowrap cursor-pointer"
                 >
-                  Save Answer PDF
+                  {isExporting === 'answers' ? 'Saving...' : 'Save Answer PDF'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSystemPrint}
+                  title="Print using browser print dialog"
+                  className="p-1.5 text-slate-600 hover:text-slate-900 border border-slate-200 bg-white hover:bg-slate-50 rounded-md transition-colors cursor-pointer"
+                >
+                  <Printer className="w-3.5 h-3.5" />
                 </button>
               </div>
             </div>
@@ -769,7 +842,7 @@ export default function App() {
             <div className="no-print mx-4 mt-3 p-3 bg-red-50 border border-red-200 rounded-lg flex items-center gap-3 text-xs text-red-800">
               <AlertCircle className="w-4 h-4 shrink-0 text-red-600" />
               <div className="flex-1 min-w-0">
-                <span className="font-semibold">Generation Error: </span>
+                <span className="font-semibold">Error: </span>
                 <span>{errorMsg}</span>
               </div>
               <button
@@ -822,7 +895,7 @@ export default function App() {
               </div>
             </div>
           ) : (
-            <div className="flex-1 overflow-auto bg-slate-200/70">
+            <div className="print-scroll-area flex-1 overflow-auto bg-slate-200/70">
               <DppPaperView
                 dpp={dpp}
                 styleConfig={styleConfig}

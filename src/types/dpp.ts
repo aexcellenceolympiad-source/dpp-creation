@@ -206,6 +206,14 @@ export interface DppStyleConfig {
   watermarkOpacity: number; // 4 to 20 (%)
   questionSpacing: number; // 8 to 28 (px)
 
+  // Page-Saver & Compact Layout Controls (6 Sliders)
+  mcqOptionsLayout: number; // 0 = Auto, 1 = 2/Row, 2 = All 4 in 1 Line
+  letterSpacing: number; // -1.0 to 0.5 px
+  wordSpacing: number; // -3.5 to 2.0 px
+  lineHeight: number; // 1.0 to 1.8
+  paragraphSpacing: number; // 0 to 24 px
+  pageMarginMm: number; // 0 to 12 mm
+
   // Granular Element Typography & Colors (All support size, color, bold, italic, underline)
   headerMetaStyle: TextStyleConfig;
   chapterLineStyle: TextStyleConfig;

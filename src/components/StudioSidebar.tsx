@@ -1105,7 +1105,7 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
               />
             </div>
 
-            {/* Watermark & Question Spacing Controls */}
+            {/* Watermark Control */}
             <div className="pt-2 border-t border-slate-200 space-y-2.5">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-semibold text-slate-700">Diagonal Page Watermark</span>
@@ -1143,25 +1143,204 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
                   />
                 </div>
               )}
-              <div>
-                <div className="flex justify-between text-[11px] text-slate-500 mb-0.5">
-                  <span>Question Spacing</span>
-                  <span className="font-mono tabular-nums">{styleConfig.questionSpacing}px</span>
+            </div>
+
+            {/* Admin Page-Saver Compact Controls (All 6 via Sliders) */}
+            <div className="pt-2 border-t border-slate-200 space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-bold text-slate-800">
+                  Admin Page-Saver (6 Sliders)
+                </span>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onStyleChange((prev) => ({
+                        ...prev,
+                        mcqOptionsLayout: 2,
+                        letterSpacing: -0.45,
+                        wordSpacing: -1.5,
+                        lineHeight: 1.12,
+                        paragraphSpacing: 3,
+                        questionSpacing: 3,
+                        pageMarginMm: 0,
+                      }))
+                    }
+                    className="px-2 py-0.5 text-[10.5px] font-semibold bg-emerald-600 hover:bg-emerald-700 text-white rounded transition-colors cursor-pointer"
+                  >
+                    Max Save
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onStyleChange((prev) => ({
+                        ...prev,
+                        mcqOptionsLayout: 0,
+                        letterSpacing: 0,
+                        wordSpacing: 0,
+                        lineHeight: 1.5,
+                        paragraphSpacing: 12,
+                        questionSpacing: 14,
+                        pageMarginMm: 6,
+                      }))
+                    }
+                    className="px-2 py-0.5 text-[10.5px] font-medium bg-slate-100 hover:bg-slate-200 text-slate-700 rounded transition-colors cursor-pointer"
+                  >
+                    Normal
+                  </button>
                 </div>
-                <input
-                  type="range"
-                  min={8}
-                  max={28}
-                  step={2}
-                  value={styleConfig.questionSpacing}
-                  onChange={(e) =>
-                    onStyleChange((prev) => ({
-                      ...prev,
-                      questionSpacing: Number(e.target.value),
-                    }))
-                  }
-                  className="w-full accent-blue-700 h-1.5"
-                />
+              </div>
+
+              <div className="p-2.5 rounded-lg border border-slate-200 bg-slate-50/70 space-y-2.5">
+                {/* 1. MCQ 4 Options in 1 Line */}
+                <div>
+                  <div className="flex justify-between text-[11px] text-slate-700 font-medium mb-0.5">
+                    <span>1. MCQ Options Row</span>
+                    <span className="font-mono tabular-nums text-blue-800">
+                      {(styleConfig.mcqOptionsLayout ?? 0) === 2
+                        ? '4 in 1 Line'
+                        : (styleConfig.mcqOptionsLayout ?? 0) === 1
+                          ? '2 per Row'
+                          : 'Auto'}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={2}
+                    step={1}
+                    value={styleConfig.mcqOptionsLayout ?? 0}
+                    onChange={(e) =>
+                      onStyleChange((prev) => ({
+                        ...prev,
+                        mcqOptionsLayout: Number(e.target.value),
+                      }))
+                    }
+                    className="w-full accent-blue-700 h-1.5"
+                  />
+                </div>
+
+                {/* 2. Letter Tightness */}
+                <div>
+                  <div className="flex justify-between text-[11px] text-slate-700 font-medium mb-0.5">
+                    <span>2. Letter Spacing (Satana)</span>
+                    <span className="font-mono tabular-nums">
+                      {(styleConfig.letterSpacing ?? 0).toFixed(2)}px
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={-1.0}
+                    max={0.5}
+                    step={0.05}
+                    value={styleConfig.letterSpacing ?? 0}
+                    onChange={(e) =>
+                      onStyleChange((prev) => ({
+                        ...prev,
+                        letterSpacing: parseFloat(e.target.value),
+                      }))
+                    }
+                    className="w-full accent-blue-700 h-1.5"
+                  />
+                </div>
+
+                {/* 3. Word Tightness */}
+                <div>
+                  <div className="flex justify-between text-[11px] text-slate-700 font-medium mb-0.5">
+                    <span>3. Word Spacing (Satana)</span>
+                    <span className="font-mono tabular-nums">
+                      {(styleConfig.wordSpacing ?? 0).toFixed(2)}px
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={-3.5}
+                    max={2.0}
+                    step={0.25}
+                    value={styleConfig.wordSpacing ?? 0}
+                    onChange={(e) =>
+                      onStyleChange((prev) => ({
+                        ...prev,
+                        wordSpacing: parseFloat(e.target.value),
+                      }))
+                    }
+                    className="w-full accent-blue-700 h-1.5"
+                  />
+                </div>
+
+                {/* 4. Line Height */}
+                <div>
+                  <div className="flex justify-between text-[11px] text-slate-700 font-medium mb-0.5">
+                    <span>4. Line Spacing (Satana)</span>
+                    <span className="font-mono tabular-nums">
+                      {(styleConfig.lineHeight ?? 1.5).toFixed(2)}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={1.0}
+                    max={1.8}
+                    step={0.05}
+                    value={styleConfig.lineHeight ?? 1.5}
+                    onChange={(e) =>
+                      onStyleChange((prev) => ({
+                        ...prev,
+                        lineHeight: parseFloat(e.target.value),
+                      }))
+                    }
+                    className="w-full accent-blue-700 h-1.5"
+                  />
+                </div>
+
+                {/* 5. Paragraph & Question Gap */}
+                <div>
+                  <div className="flex justify-between text-[11px] text-slate-700 font-medium mb-0.5">
+                    <span>5. Paragraph Gap (Satana)</span>
+                    <span className="font-mono tabular-nums">
+                      {styleConfig.paragraphSpacing ?? 12}px
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={24}
+                    step={1}
+                    value={styleConfig.paragraphSpacing ?? 12}
+                    onChange={(e) => {
+                      const val = Number(e.target.value);
+                      onStyleChange((prev) => ({
+                        ...prev,
+                        paragraphSpacing: val,
+                        questionSpacing: val,
+                      }));
+                    }}
+                    className="w-full accent-blue-700 h-1.5"
+                  />
+                </div>
+
+                {/* 6. Page Margin */}
+                <div>
+                  <div className="flex justify-between text-[11px] text-slate-700 font-medium mb-0.5">
+                    <span>6. Page Margin (0 = Zero)</span>
+                    <span className="font-mono tabular-nums">
+                      {(styleConfig.pageMarginMm ?? 6).toFixed(1)}mm
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={12}
+                    step={0.5}
+                    value={styleConfig.pageMarginMm ?? 6}
+                    onChange={(e) =>
+                      onStyleChange((prev) => ({
+                        ...prev,
+                        pageMarginMm: parseFloat(e.target.value),
+                      }))
+                    }
+                    className="w-full accent-blue-700 h-1.5"
+                  />
+                </div>
               </div>
             </div>
           </>
