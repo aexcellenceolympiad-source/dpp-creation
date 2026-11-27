@@ -74,6 +74,7 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
   const questions = Array.isArray(dpp?.questions) ? dpp.questions : [];
   const totalMarks = questions.reduce((sum, q) => sum + (q.marks || 0), 0);
   const isTestPaper = dpp.metadata?.paperType === 'test';
+  const isSamplePaper = dpp.metadata?.paperType === 'sample_paper';
   const isLandscape = styleConfig.orientation === 'landscape';
   const paperWidthMm = isLandscape ? 297 : 210;
   const paperMinHeightMm = isLandscape ? 210 : 297;
@@ -286,9 +287,11 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                     >
                       <span>
                         {mode === 'questions'
-                          ? isTestPaper
-                            ? 'TEST QUESTION PAPER'
-                            : 'DAILY PRACTICE PROBLEM (DPP)'
+                          ? isSamplePaper
+                            ? 'OFFICIAL PATTERN SAMPLE QUESTION PAPER'
+                            : isTestPaper
+                              ? 'TEST QUESTION PAPER'
+                              : 'DAILY PRACTICE PROBLEM (DPP)'
                           : 'ANSWER KEY & STEP-BY-STEP SOLUTIONS'}
                       </span>
                       <span aria-hidden="true">·</span>
@@ -313,7 +316,9 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                         bold: true,
                       })}
                     >
-                      Chapter: {dpp.metadata.chapter} — Topic: {dpp.metadata.topic}
+                      {isSamplePaper
+                        ? `${dpp.metadata.chapter} — ${dpp.metadata.topic}`
+                        : `Chapter: ${dpp.metadata.chapter} — Topic: ${dpp.metadata.topic}`}
                     </div>
 
                     {styleConfig.showHeaderMeta && (
@@ -333,12 +338,12 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                       </div>
                     )}
 
-                    {isTestPaper && mode === 'questions' && (
+                    {(isTestPaper || isSamplePaper) && mode === 'questions' && (
                       <div
                         className="mt-2 text-[10.5px] italic opacity-85"
                         style={{ color: styleConfig.headerMetaStyle.color }}
                       >
-                        General Instructions: All questions are compulsory. Marks and negative marking (if any) are indicated against each question.
+                        General Instructions: All questions are compulsory as per official exam blueprint. Marks and negative marking (if any) are indicated against each section/question.
                       </div>
                     )}
                   </header>
@@ -352,21 +357,38 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                           : ''
                       }
                     >
-                      {questions.map((q) => {
+                      {questions.map((q, qIdx) => {
                         const isSubjective = q.type === 'subjective';
                         const stemStyle = isSubjective
                           ? toTextCss(styleConfig.subjectiveStyle)
                           : toTextCss(styleConfig.questionStyle);
+                        const prevSection = qIdx > 0 ? questions[qIdx - 1]?.sectionLabel : undefined;
+                        const showSectionHeader = Boolean(q.sectionLabel && q.sectionLabel !== prevSection);
 
                         return (
-                          <article
-                            key={q.id}
-                            className="question-block-avoid-break group relative break-inside-avoid min-w-0 max-w-full border-b border-slate-200/70 last:border-b-0"
-                            style={{
-                              marginBottom: `${paraGapPx}px`,
-                              paddingBottom: `${Math.max(2, Math.round(paraGapPx * 0.55))}px`,
-                            }}
-                          >
+                          <React.Fragment key={q.id}>
+                            {showSectionHeader && (
+                              <div
+                                className="break-after-avoid px-2.5 py-1.5 rounded-sm border-l-4 font-bold uppercase tracking-wide text-[11.5px]"
+                                style={{
+                                  columnSpan: styleConfig.columns === 2 ? 'all' : undefined,
+                                  marginTop: qIdx === 0 ? 0 : `${Math.max(6, paraGapPx)}px`,
+                                  marginBottom: `${Math.max(4, Math.round(paraGapPx * 0.75))}px`,
+                                  backgroundColor: `${styleConfig.borderColor}10`,
+                                  borderColor: styleConfig.brandStyle.color,
+                                  color: styleConfig.brandStyle.color,
+                                }}
+                              >
+                                {q.sectionLabel}
+                              </div>
+                            )}
+                            <article
+                              className="question-block-avoid-break group relative break-inside-avoid min-w-0 max-w-full border-b border-slate-200/70 last:border-b-0"
+                              style={{
+                                marginBottom: `${paraGapPx}px`,
+                                paddingBottom: `${Math.max(2, Math.round(paraGapPx * 0.55))}px`,
+                              }}
+                            >
                             {/* Inline Teacher Controls (hidden on PDF print) */}
                             <div className="no-print opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity absolute -top-1 right-0 flex items-center gap-1 bg-white/95 border border-slate-200 rounded px-1.5 py-0.5 shadow-xs z-10">
                               <button
@@ -713,6 +735,7 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                               </div>
                             )}
                           </article>
+                          </React.Fragment>
                         );
                       })}
                     </div>
@@ -785,15 +808,33 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                               : 'space-y-4'
                           }
                         >
-                          {questions.map((q) => (
-                            <article
-                              key={q.id}
-                              className="question-block-avoid-break break-inside-avoid border-b border-slate-200/70 last:border-b-0"
-                              style={{
-                                marginBottom: `${paraGapPx}px`,
-                                paddingBottom: `${Math.max(2, Math.round(paraGapPx * 0.55))}px`,
-                              }}
-                            >
+                          {questions.map((q, qIdx) => {
+                            const prevSection = qIdx > 0 ? questions[qIdx - 1]?.sectionLabel : undefined;
+                            const showSectionHeader = Boolean(q.sectionLabel && q.sectionLabel !== prevSection);
+                            return (
+                              <React.Fragment key={q.id}>
+                                {showSectionHeader && (
+                                  <div
+                                    className="break-after-avoid px-2.5 py-1 rounded-sm border-l-4 font-bold uppercase tracking-wide text-[11px]"
+                                    style={{
+                                      columnSpan: styleConfig.columns === 2 ? 'all' : undefined,
+                                      marginTop: qIdx === 0 ? 0 : `${Math.max(6, paraGapPx)}px`,
+                                      marginBottom: `${Math.max(4, Math.round(paraGapPx * 0.75))}px`,
+                                      backgroundColor: `${styleConfig.borderColor}10`,
+                                      borderColor: styleConfig.brandStyle.color,
+                                      color: styleConfig.brandStyle.color,
+                                    }}
+                                  >
+                                    {q.sectionLabel}
+                                  </div>
+                                )}
+                                <article
+                                  className="question-block-avoid-break break-inside-avoid border-b border-slate-200/70 last:border-b-0"
+                                  style={{
+                                    marginBottom: `${paraGapPx}px`,
+                                    paddingBottom: `${Math.max(2, Math.round(paraGapPx * 0.55))}px`,
+                                  }}
+                                >
                               <div className="flex flex-wrap items-baseline justify-between gap-2 mb-1">
                                 <span
                                   className="font-bold tabular-nums"
@@ -841,7 +882,9 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                                 ))}
                               </ol>
                             </article>
-                          ))}
+                              </React.Fragment>
+                            );
+                          })}
                         </div>
                       </section>
                     </div>
@@ -877,9 +920,11 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
             <span>{styleConfig.footerNote}</span>
             <span className="tabular-nums">
               {mode === 'questions'
-                ? isTestPaper
-                  ? 'Test Question Paper'
-                  : 'DPP Question Sheet'
+                ? isSamplePaper
+                  ? 'Official Sample Paper'
+                  : isTestPaper
+                    ? 'Test Question Paper'
+                    : 'DPP Question Sheet'
                 : 'Answer Key & Solutions'}{' '}
               · {styleConfig.brandName}
             </span>

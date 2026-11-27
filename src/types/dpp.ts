@@ -14,9 +14,30 @@ export type QuestionType =
   | 'subjective';
 
 export type LanguageMedium = 'English' | 'Hindi' | 'Bilingual';
-export type PaperType = 'dpp' | 'test';
+export type PaperType = 'dpp' | 'test' | 'sample_paper';
+export type TopicMode = 'single' | 'mixed';
+export type SamplePaperExamId =
+  | 'neet_180'
+  | 'jee_main_75'
+  | 'jee_adv_54'
+  | 'cbse_12_board'
+  | 'cbse_10_board';
+export type SampleSyllabusScope = 'full' | 'selected';
+export type SampleDistributionMode = 'equal' | 'custom';
 export type AiReasoningMode = 'deep' | 'fast';
 export type AiProviderPref = 'auto' | 'groq' | 'gemini';
+
+export interface MixedTopicItem {
+  chapter: string;
+  topic: string;
+}
+
+export interface SampleChapterSelection {
+  subject: string;
+  classLevel: ClassLevel;
+  chapter: string;
+  questionCount?: number;
+}
 
 export interface ReactionScheme {
   reactants: string[]; // SMILES strings
@@ -138,6 +159,8 @@ export interface DppQuestion {
   marks: number;
   negativeMarks: number;
   pyqTag?: string;
+  sectionLabel?: string;
+  subjectTag?: string;
   stem: string;
   options?: QuestionOption[];
   assertion?: string;
@@ -159,6 +182,12 @@ export interface DppMetadata {
   referenceBooks: string[];
   medium: LanguageMedium;
   paperType?: PaperType;
+  topicMode?: TopicMode;
+  mixedTopics?: MixedTopicItem[];
+  sampleExamId?: SamplePaperExamId;
+  sampleSyllabusScope?: SampleSyllabusScope;
+  sampleDistributionMode?: SampleDistributionMode;
+  sampleSelectedChapters?: SampleChapterSelection[];
 }
 
 export interface DppDocument {
@@ -263,4 +292,10 @@ export interface GenerateDppPayload {
   aiProvider?: AiProviderPref;
   customInstructions?: string;
   paperType?: PaperType;
+  topicMode?: TopicMode;
+  mixedTopics?: MixedTopicItem[];
+  sampleExamId?: SamplePaperExamId;
+  sampleSyllabusScope?: SampleSyllabusScope;
+  sampleDistributionMode?: SampleDistributionMode;
+  sampleSelectedChapters?: SampleChapterSelection[];
 }

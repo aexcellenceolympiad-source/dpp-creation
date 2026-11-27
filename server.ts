@@ -4,6 +4,14 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
+import {
+  buildBalancedChapterSlots,
+  computeEqualSubjectCounts,
+  getSamplePaperBlueprint,
+  getSamplePaperChaptersPool,
+  getSubjectTotalQuota,
+  type SamplePoolChapter,
+} from './src/data/samplePaperBlueprints.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -902,6 +910,8 @@ function buildPedagogicalPrompt(
     subject: string;
     chapter: string;
     topic: string;
+    topicMode?: string;
+    mixedTopics?: { chapter: string; topic: string }[];
     questionTypes: string[];
     diagramPercentage: number;
     medium: string;
@@ -912,12 +922,15 @@ function buildPedagogicalPrompt(
   batchCount: number,
   startNumber: number,
   batchFocus?: string,
+  batchTopics?: { chapter: string; topic: string }[],
 ) {
   const isJunior = parseInt(body.classLevel, 10) <= 10;
   const boardOrExam = isJunior ? body.juniorBoard : body.seniorExam;
   const tierOrLevel = isJunior ? body.juniorTier : body.seniorExam;
   const targetDiagramCount = Math.round((batchCount * body.diagramPercentage) / 100);
   const isTestPaper = body.paperType === 'test';
+  const isMixed =
+    body.topicMode === 'mixed' && Array.isArray(body.mixedTopics) && body.mixedTopics.length > 0;
 
   let levelCalibration = '';
   if (isJunior) {
@@ -936,13 +949,26 @@ function buildPedagogicalPrompt(
     levelCalibration = `LEVEL (Class ${body.classLevel} Board Exams): Match CBSE/JAC/ISC Board marking scheme, derivations, and NCERT/RD Sharma/SL Arora problems.`;
   }
 
+  const assignedMixList =
+    batchTopics && batchTopics.length > 0 ? batchTopics : body.mixedTopics || [];
+  const topicRuleBlock = isMixed
+    ? `- MIXED TOPICS MODE (COVER EVENLY — STRICT):
+  -> Full Selected Topic Pool (${body.mixedTopics!.length} topics): ${body.mixedTopics!
+        .map((m) => `${m.chapter}: ${m.topic}`)
+        .join(' | ')}
+  -> FOR THIS BATCH (Q${startNumber}–Q${startNumber + batchCount - 1}), distribute questions evenly across these specific topics: ${assignedMixList
+        .map((m, idx) => `(${idx + 1}) "${m.topic}" [${m.chapter}]`)
+        .join(', ')}
+  -> Every question MUST belong strictly to the selected mixed topics above (zero unrelated syllabus topics).`
+    : `- Chapter: ${body.chapter}
+- EXACT LOCKED TOPIC (100% STRICT): "${body.topic}"
+  -> Every single question MUST test ONLY "${body.topic}". Zero off-topic drift to other topics of "${body.chapter}".`;
+
   return `You are a Principal Indian IIT-JEE/NEET/Board Paper-Setter. Generate EXACTLY ${batchCount} ORIGINAL, VERIFIED questions numbered ${startNumber} to ${startNumber + batchCount - 1}.
 
 SPEC:
 - Class ${body.classLevel} · ${boardOrExam} (${tierOrLevel}) · Subject: ${body.subject}
-- Chapter: ${body.chapter}
-- EXACT LOCKED TOPIC (100% STRICT): "${body.topic}"
-  -> Every single question MUST test ONLY "${body.topic}". Zero off-topic drift to other topics of "${body.chapter}".
+${topicRuleBlock}
 - Medium: ${body.medium}${body.medium === 'Bilingual' ? ' (English stem + exact Hindi Devanagari translation below)' : body.medium === 'Hindi' ? ' (Academic Hindi Devanagari + LaTeX math)' : ''}
 - Books: ${body.referenceBooks.join(', ')}
 - Allowed Types (distribute cleanly): ${body.questionTypes.join(', ')}
@@ -963,6 +989,69 @@ QUALITY, LATEX & DIAGRAM SPEED RULES:
 ${body.customInstructions?.trim() ? `\nTEACHER INSTRUCTIONS (STRICT):\n${body.customInstructions.trim()}` : ''}`;
 }
 
+function buildSamplePaperBatchPrompt(params: {
+  blueprintTitle: string;
+  examHeaderTag: string;
+  boardOrExam: string;
+  sectionLabel: string;
+  subject: string;
+  patternNote: string;
+  marks: number;
+  negativeMarks: number;
+  questionTypes: string[];
+  batchSize: number;
+  startNumber: number;
+  slotChapters: SamplePoolChapter[];
+  diagramPercentage: number;
+  medium: string;
+  referenceBooks: string[];
+  customInstructions?: string;
+}) {
+  const targetDiagramCount = Math.round((params.batchSize * params.diagramPercentage) / 100);
+  const uniqueChapters: SamplePoolChapter[] = [];
+  for (const ch of params.slotChapters) {
+    if (!uniqueChapters.some((u) => u.chapter === ch.chapter && u.classLevel === ch.classLevel)) {
+      uniqueChapters.push(ch);
+    }
+  }
+  const chapterGuide = uniqueChapters
+    .map((c) => {
+      const sampleTopics = c.topics.slice(0, 6).join('; ');
+      return `• [Class ${c.classLevel}] ${c.chapter}${sampleTopics ? ` (Key subtopics: ${sampleTopics})` : ''}`;
+    })
+    .join('\n');
+
+  const questionAssignment = params.slotChapters
+    .map((c, idx) => `• Q${params.startNumber + idx} -> [Class ${c.classLevel}] ${c.chapter}`)
+    .join('\n');
+
+  return `You are a Principal Official ${params.boardOrExam} Sample Paper-Setter. Generate EXACTLY ${params.batchSize} ORIGINAL, PYQ-CALIBRATED exam questions numbered ${params.startNumber} to ${params.startNumber + params.batchSize - 1}.
+
+OFFICIAL EXAM SPEC:
+- Exam Pattern: ${params.blueprintTitle} (${params.examHeaderTag})
+- Section: ${params.sectionLabel}
+- Subject: ${params.subject} · Marking: +${params.marks}${params.negativeMarks > 0 ? ` / -${params.negativeMarks}` : ' / 0'}
+- Allowed Question Type(s) for this batch (STRICT): ${params.questionTypes.join(', ')}
+- Section Pattern Guidance: ${params.patternNote}
+- Medium: ${params.medium}${params.medium === 'Bilingual' ? ' (English stem + exact Hindi Devanagari translation below)' : params.medium === 'Hindi' ? ' (Academic Hindi Devanagari + LaTeX math)' : ''}
+- Reference Standard: ${(params.referenceBooks || []).join(', ') || 'Official NCERT / NTA / CBSE PYQ Archives'}
+- Diagrams: ${targetDiagramCount > 0 ? `Include clean diagrams for ~${targetDiagramCount}/${params.batchSize} Qs.` : `Set diagram.kind='none' for all Qs.`}
+
+EXACT QUESTION-TO-CHAPTER ASSIGNMENT (100% STRICT — ZERO deleted/out-of-syllabus topics):
+${questionAssignment}
+
+SYLLABUS REFERENCE FOR ASSIGNED CHAPTERS:
+${chapterGuide}
+
+STRICT QUALITY, LATEX & SPEED RULES:
+1. Mirror genuine latest PYQ & official sample paper difficulty, wording, units, and traps. Verify every answer key carefully before writing JSON.
+2. STRICT LATEX WRAPPING: Wrap EVERY math expression, variable, equation, degree/angle, and chemical formula in $...$ (e.g., "$30^\\\\circ$", "$\\\\frac{1}{2}$", "$\\\\ce{H2SO4}$"). Double-escape JSON backslashes properly.
+3. Keep "solutionSteps" concise & crystal clear (2–3 crisp steps per question) for fast generation.
+4. Use structured diagram engines ('chemistry_smiles', 'chemistry_reaction', 'math_plot', 'geometry', 'physics_diagram') or compact <svg viewBox="0 0 360 190"> with stroke="currentColor" when needed.
+5. Type format: 'mcq'/'multiple_correct' -> 4 options A-D; 'assertion_reason' -> assertion, reason, 4 CBSE options A-D; 'match_following' -> matchColumns (P,Q,R,S & 1,2,3,4) + 4 options A-D; 'fill_blank' -> numerical/integer prompt with "________" and exact number in correctAnswer; 'subjective' -> empty options (include sub-parts (i), (ii), (iii) for 4-mark Case Studies).
+${params.customInstructions?.trim() ? `\nTEACHER INSTRUCTIONS (STRICT):\n${params.customInstructions.trim()}` : ''}`;
+}
+
 app.get('/api/health', (_req, res) => {
   res.json({
     status: 'ok',
@@ -975,8 +1064,11 @@ app.get('/api/health', (_req, res) => {
 
 app.post('/api/dpp/generate', async (req, res) => {
   const body = req.body;
-  if (!body || !body.subject || !body.chapter || !body.topic) {
-    return res.status(400).json({ error: 'Subject, chapter, and topic are required.' });
+  const isSamplePaperReq = body?.paperType === 'sample_paper' && Boolean(body?.sampleExamId);
+  const hasMixed =
+    body?.topicMode === 'mixed' && Array.isArray(body?.mixedTopics) && body.mixedTopics.length > 0;
+  if (!body || (!isSamplePaperReq && (!body.subject || (!hasMixed && (!body.chapter || !body.topic))))) {
+    return res.status(400).json({ error: 'Subject, chapter, and topic(s) are required.' });
   }
 
   const wantsStream = req.headers.accept?.includes('application/x-ndjson');
@@ -1011,38 +1103,270 @@ app.post('/api/dpp/generate', async (req, res) => {
   }
 
   try {
-    const totalRequested = Math.min(Math.max(Number(body.questionCount) || 5, 1), 30);
     const ai = getAiClient();
-    const marks = Number(body.marksPerQuestion) || 4;
-    const neg = Number(body.negativeMarks) || 0;
     const isJunior = parseInt(body.classLevel, 10) <= 10;
     const aiMode = body.aiMode === 'deep' ? 'deep' : 'fast';
     const aiProvider: AiProviderPref =
       body.aiProvider === 'groq' || body.aiProvider === 'gemini' ? body.aiProvider : 'auto';
-    const allowedTypes = Array.isArray(body.questionTypes) && body.questionTypes.length > 0
-      ? body.questionTypes
-      : ['mcq'];
 
-    // Fast 5-question batches (4 when heavy diagrams) so Batch 1 appears within seconds & parallel pool finishes fast
-    const batchSizes: number[] = [];
-    let remaining = totalRequested;
-    const maxBatch = Number(body.diagramPercentage) >= 70 ? 4 : 5;
-    while (remaining > 0) {
-      const size = Math.min(remaining, maxBatch);
-      batchSizes.push(size);
-      remaining -= size;
+    interface BatchTask {
+      batchSize: number;
+      startNum: number;
+      marks: number;
+      negativeMarks: number;
+      allowedTypes: string[];
+      sectionLabel?: string;
+      subjectTag?: string;
+      prompt: string;
     }
 
-    const batchAngles = [
-      'Batch 1 ONLY: Focus on core definitions, basic facts/laws & direct foundational PYQ setups. Do NOT cover edge cases or comparative synthesis.',
-      'Batch 2 ONLY: Focus on cause-effect reasoning, consequences, multi-step numerical/analytical problems & conceptual traps. NEVER repeat basic introductory recall.',
-      'Batch 3 ONLY: Focus on graphical/diagrammatic interpretations, special boundary cases, comparative analysis & statement-based twists.',
-      'Batch 4 ONLY: Focus on non-standard parameters, mixed constraints, exceptions & tricky exam variations.',
-      'Batch 5 ONLY: Focus on high-yield reference-book / Exemplar rank-booster scenarios & critical evaluation.',
-      'Batch 6 ONLY: Final distinct sweep of unique numerical/analytical cases not covered in Batches 1–5.',
-    ];
+    const tasks: BatchTask[] = [];
+    let metaClassLevel = body.classLevel;
+    let metaBoardOrExam = isJunior ? body.juniorBoard : body.seniorExam;
+    let metaTierOrLevel = isJunior ? body.juniorTier : body.seniorExam;
+    let metaSubject = body.subject;
+    let metaChapter = body.chapter;
+    let metaTopic = body.topic;
+    let defaultTitle = `${body.subject} ${body.paperType === 'test' ? 'Test Question Paper' : 'DPP'} — ${body.topic}`;
+    let defaultSubtitle = `Class ${body.classLevel} · ${metaBoardOrExam}`;
 
-    const batchResults: (Record<string, unknown>[] | null)[] = new Array(batchSizes.length).fill(null);
+    const isMixedTopicMode =
+      body.topicMode === 'mixed' && Array.isArray(body.mixedTopics) && body.mixedTopics.length > 0;
+    const cleanedMix: { chapter: string; topic: string }[] = isMixedTopicMode
+      ? body.mixedTopics.filter(
+          (m: unknown): m is { chapter: string; topic: string } =>
+            Boolean(
+              m &&
+                typeof m === 'object' &&
+                typeof (m as { topic?: unknown }).topic === 'string' &&
+                String((m as { topic: string }).topic).trim(),
+            ),
+        )
+      : [];
+
+    if (isSamplePaperReq) {
+      const bp = getSamplePaperBlueprint(body.sampleExamId);
+      const boardSubj = bp.isMultiSubject
+        ? bp.defaultBoardSubject
+        : bp.subjects.includes(body.subject)
+          ? body.subject
+          : bp.defaultBoardSubject;
+      const sections = bp.getSections(boardSubj);
+      const fullPool = getSamplePaperChaptersPool(bp.id, boardSubj);
+      const customSelected: {
+        subject: string;
+        classLevel: string;
+        chapter: string;
+        questionCount?: number;
+      }[] =
+        body.sampleSyllabusScope === 'selected' && Array.isArray(body.sampleSelectedChapters)
+          ? body.sampleSelectedChapters
+          : [];
+      const distMode = body.sampleDistributionMode === 'custom' ? 'custom' : 'equal';
+
+      metaClassLevel = bp.id === 'cbse_10_board' ? '10' : '12';
+      metaBoardOrExam = bp.boardOrExam;
+      metaTierOrLevel = bp.title;
+      metaSubject = bp.isMultiSubject ? bp.subjects.join(' · ') : boardSubj;
+      metaChapter =
+        customSelected.length > 0
+          ? `Selected Chapters (${customSelected.length} · ${distMode === 'custom' ? 'Custom Count' : 'Equal Split'})`
+          : 'Full Official Syllabus (Equal Split)';
+      metaTopic = bp.examHeaderTag;
+      defaultTitle = `${bp.title}${bp.isMultiSubject ? '' : ` — ${boardSubj}`}`;
+      defaultSubtitle = bp.examHeaderTag;
+
+      // Build exact per-subject question slot queue matching subject's official total quota
+      const subjectSlotQueues = new Map<string, SamplePoolChapter[]>();
+      const subjectSlotCursor = new Map<string, number>();
+
+      const uniqueSubjects = Array.from(new Set(sections.map((s) => s.subject)));
+      for (const subj of uniqueSubjects) {
+        const subjectQuota = getSubjectTotalQuota(sections, subj);
+        const subjectFullChapters = fullPool.filter((p) => p.subject === subj);
+        const pickedCustom = customSelected.filter((c) => c.subject === subj);
+
+        if (pickedCustom.length > 0) {
+          const resolvedChapters: SamplePoolChapter[] = pickedCustom.map((c) => {
+            const match = subjectFullChapters.find(
+              (f) => f.chapter === c.chapter && f.classLevel === c.classLevel,
+            );
+            return (
+              match || {
+                subject: c.subject,
+                classLevel: (c.classLevel as SamplePoolChapter['classLevel']) || '12',
+                chapter: c.chapter,
+                topics: [],
+              }
+            );
+          });
+
+          let counts: number[];
+          const rawCounts = pickedCustom.map((c) => Math.max(0, Math.round(Number(c.questionCount) || 0)));
+          const rawSum = rawCounts.reduce((a, b) => a + b, 0);
+
+          if (distMode === 'custom' && rawSum > 0) {
+            if (rawSum === subjectQuota) {
+              counts = rawCounts;
+            } else if (rawSum < subjectQuota) {
+              counts = [...rawCounts];
+              let rem = subjectQuota - rawSum;
+              let idx = 0;
+              while (rem > 0) {
+                counts[idx % counts.length] += 1;
+                rem -= 1;
+                idx += 1;
+              }
+            } else {
+              // Scale down proportionally via largest remainder so sum === subjectQuota
+              const exact = rawCounts.map((c) => (c * subjectQuota) / rawSum);
+              counts = exact.map((v) => Math.floor(v));
+              let rem = subjectQuota - counts.reduce((a, b) => a + b, 0);
+              const order = exact
+                .map((v, i) => ({ i, frac: v - Math.floor(v) }))
+                .sort((a, b) => b.frac - a.frac);
+              for (let k = 0; k < rem; k++) {
+                counts[order[k % order.length].i] += 1;
+              }
+            }
+          } else {
+            counts = computeEqualSubjectCounts(subjectQuota, resolvedChapters.length);
+          }
+
+          subjectSlotQueues.set(
+            subj,
+            buildBalancedChapterSlots(resolvedChapters, counts, subjectQuota),
+          );
+        } else {
+          const fallbackList =
+            subjectFullChapters.length > 0
+              ? subjectFullChapters
+              : [
+                  {
+                    subject: subj,
+                    classLevel: (metaClassLevel as SamplePoolChapter['classLevel']) || '12',
+                    chapter: `${subj} Complete Syllabus`,
+                    topics: [],
+                  },
+                ];
+          const eqCounts = computeEqualSubjectCounts(subjectQuota, fallbackList.length);
+          subjectSlotQueues.set(
+            subj,
+            buildBalancedChapterSlots(fallbackList, eqCounts, subjectQuota),
+          );
+        }
+        subjectSlotCursor.set(subj, 0);
+      }
+
+      const maxBatch = Number(body.diagramPercentage) >= 70 ? 4 : 6;
+      let runningNum = 1;
+
+      for (const section of sections) {
+        const queue = subjectSlotQueues.get(section.subject) || [];
+        let cursor = subjectSlotCursor.get(section.subject) || 0;
+        let secRemaining = section.count;
+
+        while (secRemaining > 0) {
+          const bSize = Math.min(secRemaining, maxBatch);
+          const slotChapters: SamplePoolChapter[] = [];
+          for (let qIdx = 0; qIdx < bSize; qIdx++) {
+            const picked = queue[(cursor + qIdx) % Math.max(1, queue.length)];
+            if (picked) slotChapters.push(picked);
+          }
+          cursor += bSize;
+
+          tasks.push({
+            batchSize: bSize,
+            startNum: runningNum,
+            marks: section.marks,
+            negativeMarks: section.negativeMarks,
+            allowedTypes: section.questionTypes,
+            sectionLabel: section.label,
+            subjectTag: section.subject,
+            prompt: buildSamplePaperBatchPrompt({
+              blueprintTitle: bp.title,
+              examHeaderTag: bp.examHeaderTag,
+              boardOrExam: bp.boardOrExam,
+              sectionLabel: section.label,
+              subject: section.subject,
+              patternNote: section.patternNote,
+              marks: section.marks,
+              negativeMarks: section.negativeMarks,
+              questionTypes: section.questionTypes,
+              batchSize: bSize,
+              startNumber: runningNum,
+              slotChapters,
+              diagramPercentage: Number(body.diagramPercentage) || 30,
+              medium: body.medium || 'English',
+              referenceBooks: Array.isArray(body.referenceBooks) ? body.referenceBooks : [],
+              customInstructions: body.customInstructions,
+            }),
+          });
+
+          runningNum += bSize;
+          secRemaining -= bSize;
+        }
+        subjectSlotCursor.set(section.subject, cursor);
+      }
+    } else {
+      const totalRequested = Math.min(Math.max(Number(body.questionCount) || 5, 1), 30);
+      const marks = Number(body.marksPerQuestion) || 4;
+      const neg = Number(body.negativeMarks) || 0;
+      const allowedTypes =
+        Array.isArray(body.questionTypes) && body.questionTypes.length > 0
+          ? body.questionTypes
+          : ['mcq'];
+
+      const batchSizes: number[] = [];
+      let remaining = totalRequested;
+      const maxBatch = Number(body.diagramPercentage) >= 70 ? 4 : 5;
+      while (remaining > 0) {
+        const size = Math.min(remaining, maxBatch);
+        batchSizes.push(size);
+        remaining -= size;
+      }
+
+      const batchAngles = [
+        'Batch 1 ONLY: Focus on core definitions, basic facts/laws & direct foundational PYQ setups. Do NOT cover edge cases or comparative synthesis.',
+        'Batch 2 ONLY: Focus on cause-effect reasoning, consequences, multi-step numerical/analytical problems & conceptual traps. NEVER repeat basic introductory recall.',
+        'Batch 3 ONLY: Focus on graphical/diagrammatic interpretations, special boundary cases, comparative analysis & statement-based twists.',
+        'Batch 4 ONLY: Focus on non-standard parameters, mixed constraints, exceptions & tricky exam variations.',
+        'Batch 5 ONLY: Focus on high-yield reference-book / Exemplar rank-booster scenarios & critical evaluation.',
+        'Batch 6 ONLY: Final distinct sweep of unique numerical/analytical cases not covered in Batches 1–5.',
+      ];
+
+      let runningOffset = 1;
+      for (let bIdx = 0; bIdx < batchSizes.length; bIdx++) {
+        const batchSize = batchSizes[bIdx];
+        const startNum = runningOffset;
+        runningOffset += batchSize;
+        const angle = batchSizes.length > 1 ? batchAngles[bIdx % batchAngles.length] : undefined;
+
+        let batchTopics: { chapter: string; topic: string }[] | undefined;
+        if (cleanedMix.length > 0) {
+          const picked: { chapter: string; topic: string }[] = [];
+          for (let qOffset = 0; qOffset < batchSize; qOffset++) {
+            const globalQIdx = startNum - 1 + qOffset;
+            const item = cleanedMix[globalQIdx % cleanedMix.length];
+            if (!picked.some((p) => p.chapter === item.chapter && p.topic === item.topic)) {
+              picked.push(item);
+            }
+          }
+          batchTopics = picked;
+        }
+
+        tasks.push({
+          batchSize,
+          startNum,
+          marks,
+          negativeMarks: neg,
+          allowedTypes,
+          prompt: buildPedagogicalPrompt(body, batchSize, startNum, angle, batchTopics),
+        });
+      }
+    }
+
+    const batchResults: (Record<string, unknown>[] | null)[] = new Array(tasks.length).fill(null);
     let sheetTitle = '';
     let sheetSubtitle = '';
     let completedBatches = 0;
@@ -1060,50 +1384,46 @@ app.post('/api/dpp/generate', async (req, res) => {
     };
 
     const isTestPaper = body.paperType === 'test';
+
     const buildPayload = () => ({
-      title:
-        sheetTitle ||
-        `${body.subject} ${isTestPaper ? 'Test Question Paper' : 'DPP'} — ${body.topic}`,
-      subtitle:
-        sheetSubtitle ||
-        `Class ${body.classLevel} · ${isJunior ? `${body.juniorBoard} (${body.juniorTier})` : body.seniorExam}`,
+      title: sheetTitle || defaultTitle,
+      subtitle: sheetSubtitle || defaultSubtitle,
       metadata: {
-        classLevel: body.classLevel,
-        boardOrExam: isJunior ? body.juniorBoard : body.seniorExam,
-        tierOrLevel: isJunior ? body.juniorTier : body.seniorExam,
-        subject: body.subject,
-        chapter: body.chapter,
-        topic: body.topic,
+        classLevel: metaClassLevel,
+        boardOrExam: metaBoardOrExam,
+        tierOrLevel: metaTierOrLevel,
+        subject: metaSubject,
+        chapter: metaChapter,
+        topic: metaTopic,
         referenceBooks: body.referenceBooks || [],
         medium: body.medium || 'English',
-        paperType: isTestPaper ? 'test' : 'dpp',
+        paperType: isSamplePaperReq ? 'sample_paper' : isTestPaper ? 'test' : 'dpp',
+        topicMode: isMixedTopicMode ? 'mixed' : 'single',
+        ...(isMixedTopicMode ? { mixedTopics: cleanedMix } : {}),
+        ...(isSamplePaperReq
+          ? {
+              sampleExamId: body.sampleExamId,
+              sampleSyllabusScope: body.sampleSyllabusScope || 'full',
+              sampleDistributionMode: body.sampleDistributionMode === 'custom' ? 'custom' : 'equal',
+              sampleSelectedChapters: body.sampleSelectedChapters || [],
+            }
+          : {}),
       },
       questions: collectOrderedQuestions(),
     });
 
-    // Compute starting question number for each batch upfront so concurrent execution stays numbered cleanly
-    const batchOffsets: number[] = [];
-    let runningOffset = 1;
-    for (const sz of batchSizes) {
-      batchOffsets.push(runningOffset);
-      runningOffset += sz;
-    }
-
-    const CONCURRENCY = Math.min(2, batchSizes.length);
+    const CONCURRENCY = isSamplePaperReq ? Math.min(3, tasks.length) : Math.min(2, tasks.length);
     let nextBatchIdx = 0;
 
     const runWorker = async () => {
       while (!clientAborted) {
         const bIdx = nextBatchIdx++;
-        if (bIdx >= batchSizes.length) break;
+        if (bIdx >= tasks.length) break;
 
-        const batchSize = batchSizes[bIdx];
-        const startNum = batchOffsets[bIdx];
-        const angle = batchSizes.length > 1 ? batchAngles[bIdx % batchAngles.length] : undefined;
-        const prompt = buildPedagogicalPrompt(body, batchSize, startNum, angle);
+        const task = tasks[bIdx];
         const batchLabel =
-          batchSizes.length > 1
-            ? `Batch ${bIdx + 1}/${batchSizes.length} (Q${startNum}–Q${startNum + batchSize - 1})`
+          tasks.length > 1
+            ? `${task.subjectTag ? `${task.subjectTag} · ` : ''}Batch ${bIdx + 1}/${tasks.length} (Q${task.startNum}–Q${task.startNum + task.batchSize - 1})`
             : undefined;
 
         const parsed = await callAiWithRetry<{
@@ -1112,7 +1432,7 @@ app.post('/api/dpp/generate', async (req, res) => {
           questions?: Record<string, unknown>[];
         }>(
           ai,
-          prompt,
+          task.prompt,
           dppResponseSchema,
           (msg) => {
             if (wantsStream && !res.writableEnded && !clientAborted) {
@@ -1134,23 +1454,35 @@ app.post('/api/dpp/generate', async (req, res) => {
 
         if (clientAborted) break;
 
-        if (!sheetTitle && parsed.title) sheetTitle = parsed.title;
-        if (!sheetSubtitle && parsed.subtitle) sheetSubtitle = parsed.subtitle;
+        if (!sheetTitle && parsed.title && !isSamplePaperReq) sheetTitle = parsed.title;
+        if (!sheetSubtitle && parsed.subtitle && !isSamplePaperReq) sheetSubtitle = parsed.subtitle;
 
         const normalizedBatch = (parsed.questions || [])
-          .slice(0, batchSize)
-          .map((q, i) => normalizeQuestion(q, startNum + i, marks, neg, allowedTypes));
+          .slice(0, task.batchSize)
+          .map((q, i) => ({
+            ...normalizeQuestion(
+              q,
+              task.startNum + i,
+              task.marks,
+              task.negativeMarks,
+              task.allowedTypes,
+            ),
+            ...(task.sectionLabel ? { sectionLabel: task.sectionLabel } : {}),
+            ...(task.subjectTag ? { subjectTag: task.subjectTag } : {}),
+          }));
 
         batchResults[bIdx] = normalizedBatch;
         completedBatches++;
 
-        if (
+        const shouldEmitPartial =
           wantsStream &&
-          batchSizes.length > 1 &&
-          completedBatches < batchSizes.length &&
+          tasks.length > 1 &&
+          completedBatches < tasks.length &&
           !res.writableEnded &&
-          !clientAborted
-        ) {
+          !clientAborted &&
+          (tasks.length <= 10 || completedBatches === 1 || completedBatches % 2 === 0);
+
+        if (shouldEmitPartial) {
           res.write(JSON.stringify({ type: 'batch', data: buildPayload() }) + '\n');
         }
       }
@@ -1210,10 +1542,28 @@ app.post('/api/dpp/regenerate-question', async (req, res) => {
     }
 
     const ai = getAiClient();
+    const isMixedRegen =
+      metadata.topicMode === 'mixed' &&
+      Array.isArray(metadata.mixedTopics) &&
+      metadata.mixedTopics.length > 0;
+    const effectiveSubject = existingQuestion.subjectTag
+      ? String(existingQuestion.subjectTag)
+      : metadata.subject;
+    const sectionHint = existingQuestion.sectionLabel
+      ? `\n- Section Context: ${existingQuestion.sectionLabel}`
+      : '';
+
+    const regenTopicLine = isMixedRegen
+      ? `- MIXED TOPICS POOL (pick from these): ${metadata.mixedTopics
+          .map((m: { chapter: string; topic: string }) => `${m.chapter}: ${m.topic}`)
+          .join(' | ')}`
+      : metadata.paperType === 'sample_paper'
+        ? `- Official Sample Paper (${metadata.boardOrExam}) · Subject: ${effectiveSubject}${sectionHint}`
+        : `- Chapter: ${metadata.chapter}\n- EXACT LOCKED TOPIC (100% STRICT): "${metadata.topic}" (Zero drift to any other topic!)`;
+
     const prompt = `Regenerate ONE fresh, different, mathematically verified question (number ${existingQuestion.number}, type "${existingQuestion.type}") for:
-- Class ${metadata.classLevel} (${metadata.boardOrExam} / ${metadata.tierOrLevel}) · ${metadata.subject}
-- Chapter: ${metadata.chapter}
-- EXACT LOCKED TOPIC (100% STRICT): "${metadata.topic}" (Zero drift to any other topic!)
+- Class ${metadata.classLevel} (${metadata.boardOrExam} / ${metadata.tierOrLevel}) · ${effectiveSubject}
+${regenTopicLine}
 - Medium: ${metadata.medium}
 - Books: ${(metadata.referenceBooks || []).join(', ')}
 - Diagram: ${forceDiagram ? 'Include a crisp diagram (SMILES/reaction for organic chemistry or <svg viewBox="0 0 360 190"> with stroke="currentColor" for Physics/Math/Bio).' : 'Include diagram if helpful.'}
@@ -1236,6 +1586,12 @@ Verify algebra, units, and options. Use $...$ LaTeX / $\\ce{...}$ and return JSO
       Number(existingQuestion.negativeMarks) || 0,
       [String(existingQuestion.type || 'mcq')],
     );
+    if (existingQuestion.sectionLabel) {
+      normalized.sectionLabel = String(existingQuestion.sectionLabel);
+    }
+    if (existingQuestion.subjectTag) {
+      normalized.subjectTag = String(existingQuestion.subjectTag);
+    }
     return res.json(normalized);
   } catch (err: unknown) {
     if (err instanceof Error && err.message === 'ABORTED') return;
@@ -1334,13 +1690,16 @@ ${JSON.stringify({ title: dpp.title, subtitle: dpp.subtitle, questions: compactQ
 
     const updatedQuestions = (parsed.questions || []).map((q, idx) => {
       const orig = dpp.questions[idx] || dpp.questions[0] || {};
-      return normalizeQuestion(
+      const norm = normalizeQuestion(
         q,
         idx + 1,
         Number(orig.marks) || 4,
         Number(orig.negativeMarks) || 0,
         [String(orig.type || q.type || 'mcq')],
       );
+      if (orig.sectionLabel) norm.sectionLabel = String(orig.sectionLabel);
+      if (orig.subjectTag) norm.subjectTag = String(orig.subjectTag);
+      return norm;
     });
 
     const resultPayload = {
@@ -1399,8 +1758,8 @@ async function startServer() {
   const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`Safal DPP Studio server listening on http://localhost:${PORT}`);
   });
-  server.requestTimeout = 180000;
-  server.headersTimeout = 185000;
+  server.requestTimeout = 360000;
+  server.headersTimeout = 365000;
 }
 
 startServer();

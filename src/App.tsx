@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Download, FileText, KeyRound, Printer, ZoomIn, ZoomOut, AlertCircle, Sparkles } from 'lucide-react';
 import { DEFAULT_STYLE_CONFIG, getChaptersForSelection, getRecommendedBooks } from './data/curriculum';
+import { getBlueprintStats, getSamplePaperBlueprint } from './data/samplePaperBlueprints';
 import { STARTER_DPP } from './data/starterDpp';
 import { DppDocument, DppQuestion, DppStyleConfig, GenerateDppPayload, TextStyleConfig } from './types/dpp';
 import { StudioSidebar, SidebarTab } from './components/StudioSidebar';
@@ -118,6 +119,16 @@ export default function App() {
     aiProvider: 'auto',
     customInstructions: '',
     paperType: 'dpp',
+    topicMode: 'single',
+    mixedTopics: initialChapters[2]?.topics[0]
+      ? [{ chapter: initialChapters[2].chapter, topic: initialChapters[2].topics[0] }]
+      : initialChapters[0]?.topics[0]
+        ? [{ chapter: initialChapters[0].chapter, topic: initialChapters[0].topics[0] }]
+        : [],
+    sampleExamId: 'neet_180',
+    sampleSyllabusScope: 'full',
+    sampleDistributionMode: 'custom',
+    sampleSelectedChapters: [],
   });
 
   const [providers, setProviders] = useState<{ gemini: boolean; groq: boolean }>({
@@ -328,6 +339,64 @@ export default function App() {
 
     let latestPartial: DppDocument | null = null;
 
+    const activeSampleBp =
+      form.paperType === 'sample_paper'
+        ? getSamplePaperBlueprint(form.sampleExamId || 'neet_180')
+        : null;
+    const activeSampleStats = activeSampleBp
+      ? getBlueprintStats(
+          activeSampleBp,
+          activeSampleBp.isMultiSubject ? activeSampleBp.defaultBoardSubject : form.subject,
+        )
+      : null;
+
+    const activeMix =
+      form.topicMode === 'mixed'
+        ? form.mixedTopics && form.mixedTopics.length > 0
+          ? form.mixedTopics
+          : [{ chapter: form.chapter, topic: form.topic }]
+        : [];
+    const uniqueMixChapters = Array.from(new Set(activeMix.map((m) => m.chapter.trim()).filter(Boolean)));
+    const uniqueMixTopics = Array.from(new Set(activeMix.map((m) => m.topic.trim()).filter(Boolean)));
+
+    const requestPayload: GenerateDppPayload =
+      form.paperType === 'sample_paper' && activeSampleBp && activeSampleStats
+        ? {
+            ...form,
+            paperType: 'sample_paper',
+            sampleExamId: activeSampleBp.id,
+            sampleSyllabusScope: form.sampleSyllabusScope || 'full',
+            sampleDistributionMode: form.sampleDistributionMode || 'equal',
+            sampleSelectedChapters: form.sampleSelectedChapters || [],
+            questionCount: activeSampleStats.totalQuestions,
+            classLevel: activeSampleBp.id === 'cbse_10_board' ? '10' : '12',
+            subject: activeSampleBp.isMultiSubject
+              ? activeSampleBp.subjects.join(' · ')
+              : activeSampleBp.subjects.includes(form.subject)
+                ? form.subject
+                : activeSampleBp.defaultBoardSubject,
+            chapter:
+              form.sampleSyllabusScope === 'selected' && (form.sampleSelectedChapters?.length || 0) > 0
+                ? `Selected Chapters (${form.sampleSelectedChapters!.length} · ${(form.sampleDistributionMode || 'equal') === 'custom' ? 'Custom Qs' : 'Equal Split'})`
+                : 'Full Official Syllabus (Equal Split)',
+            topic: activeSampleBp.examHeaderTag,
+          }
+        : form.topicMode === 'mixed' && activeMix.length > 0
+          ? {
+              ...form,
+              topicMode: 'mixed',
+              mixedTopics: activeMix,
+              chapter:
+                uniqueMixChapters.length <= 2
+                  ? uniqueMixChapters.join(', ')
+                  : `${uniqueMixChapters.slice(0, 2).join(', ')} +${uniqueMixChapters.length - 2} more`,
+              topic:
+                uniqueMixTopics.length <= 3
+                  ? `Mixed Topics (${uniqueMixTopics.length}): ${uniqueMixTopics.join(' · ')}`
+                  : `Mixed Topics (${uniqueMixTopics.length}): ${uniqueMixTopics.slice(0, 3).join(' · ')} +${uniqueMixTopics.length - 3} more`,
+            }
+          : { ...form, topicMode: 'single' };
+
     try {
       let generated: DppDocument | null = null;
       for (let attempt = 0; attempt <= 2; attempt++) {
@@ -338,7 +407,7 @@ export default function App() {
             'Content-Type': 'application/json',
             Accept: 'application/x-ndjson',
           },
-          body: JSON.stringify(form),
+          body: JSON.stringify(requestPayload),
           signal: controller.signal,
         });
 
@@ -365,20 +434,25 @@ export default function App() {
           break;
         }
 
-        await readNdjsonStream(res, controller, (evt) => {
-          if (evt.type === 'progress' && evt.message) {
-            setProgressMsg(evt.message);
-          } else if (evt.type === 'batch' && evt.data) {
-            latestPartial = evt.data;
-            setDpp(evt.data);
-            setHasPartialBatch(true);
-            setDocMode('questions');
-          } else if (evt.type === 'result' && evt.data) {
-            generated = evt.data;
-          } else if (evt.type === 'error') {
-            throw new Error(evt.error || 'Failed to generate DPP.');
-          }
-        });
+        await readNdjsonStream(
+          res,
+          controller,
+          (evt) => {
+            if (evt.type === 'progress' && evt.message) {
+              setProgressMsg(evt.message);
+            } else if (evt.type === 'batch' && evt.data) {
+              latestPartial = evt.data;
+              setDpp(evt.data);
+              setHasPartialBatch(true);
+              setDocMode('questions');
+            } else if (evt.type === 'result' && evt.data) {
+              generated = evt.data;
+            } else if (evt.type === 'error') {
+              throw new Error(evt.error || 'Failed to generate DPP.');
+            }
+          },
+          form.paperType === 'sample_paper' ? 75000 : 45000,
+        );
         break;
       }
 
@@ -389,7 +463,12 @@ export default function App() {
       }
       setDpp(finalDoc);
       setHistory((prev) => {
-        const docTag = finalDoc.metadata.paperType === 'test' ? 'Test' : 'DPP';
+        const docTag =
+          finalDoc.metadata.paperType === 'sample_paper'
+            ? 'Sample'
+            : finalDoc.metadata.paperType === 'test'
+              ? 'Test'
+              : 'DPP';
         const entry: SavedDppEntry = {
           id: `sheet-${Date.now()}`,
           label: `[${docTag}] Class ${finalDoc.metadata.classLevel} ${finalDoc.metadata.subject} · ${finalDoc.metadata.topic} (${finalDoc.questions.length} Qs)`,
@@ -486,7 +565,15 @@ export default function App() {
       })) as unknown as DppQuestion;
       setDpp((prev) => ({
         ...prev,
-        questions: prev.questions.map((item) => (item.id === q.id ? data : item)),
+        questions: prev.questions.map((item) =>
+          item.id === q.id
+            ? {
+                ...data,
+                sectionLabel: data.sectionLabel ?? item.sectionLabel,
+                subjectTag: data.subjectTag ?? item.subjectTag,
+              }
+            : item,
+        ),
       }));
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : 'Unable to regenerate question.');
@@ -522,11 +609,14 @@ export default function App() {
     }
 
     const isTest = dpp.metadata?.paperType === 'test';
+    const isSample = dpp.metadata?.paperType === 'sample_paper';
     const suffix =
       targetMode === 'questions'
-        ? isTest
-          ? 'Test-Question-Paper'
-          : 'DPP-Question-Sheet'
+        ? isSample
+          ? 'Official-Sample-Paper'
+          : isTest
+            ? 'Test-Question-Paper'
+            : 'DPP-Question-Sheet'
         : 'Answer-Key-Solutions';
     const cleanBrand = (styleConfig.brandName || 'Safal-DPP').replace(/[^a-zA-Z0-9_-]+/g, '-');
     const cleanSubj = (dpp.metadata.subject || 'Sheet').replace(/[^a-zA-Z0-9_-]+/g, '-');
@@ -565,11 +655,14 @@ export default function App() {
   const handleSystemPrint = () => {
     const prevTitle = document.title;
     const isTest = dpp.metadata?.paperType === 'test';
+    const isSample = dpp.metadata?.paperType === 'sample_paper';
     const suffix =
       docMode === 'questions'
-        ? isTest
-          ? 'Test-Question-Paper'
-          : 'DPP-Question-Sheet'
+        ? isSample
+          ? 'Official-Sample-Paper'
+          : isTest
+            ? 'Test-Question-Paper'
+            : 'DPP-Question-Sheet'
         : 'Answer-Key-Solutions';
     document.title = `${styleConfig.brandName.replace(/\s+/g, '-')}-${dpp.metadata.subject}-${suffix}`;
     window.print();
@@ -863,38 +956,62 @@ export default function App() {
           )}
 
           {/* Live progressive generation bar when first batch is already on screen */}
-          {isGenerating && hasPartialBatch && (
-            <div className="no-print mx-4 mt-3 px-4 py-2.5 bg-blue-50 border border-blue-200 rounded-lg flex items-center justify-between gap-3 text-xs text-blue-900">
-              <span className="font-medium">
-                {progressMsg || `Adding remaining questions (${dpp.questions.length}/${form.questionCount} ready)...`}
-              </span>
-              <span className="font-mono tabular-nums font-semibold">
-                {dpp.questions.length}/{form.questionCount}
-              </span>
-            </div>
-          )}
+          {isGenerating && hasPartialBatch && (() => {
+            const targetTotal =
+              form.paperType === 'sample_paper'
+                ? getBlueprintStats(
+                    getSamplePaperBlueprint(form.sampleExamId || 'neet_180'),
+                    form.subject,
+                  ).totalQuestions
+                : form.questionCount;
+            return (
+              <div className="no-print mx-4 mt-3 px-4 py-2.5 bg-blue-50 border border-blue-200 rounded-lg flex items-center justify-between gap-3 text-xs text-blue-900">
+                <span className="font-medium">
+                  {progressMsg || `Adding remaining questions (${dpp.questions.length}/${targetTotal} ready)...`}
+                </span>
+                <span className="font-mono tabular-nums font-semibold">
+                  {dpp.questions.length}/{targetTotal}
+                </span>
+              </div>
+            );
+          })()}
 
           {/* Generating Overlay (shown only before batch 1 arrives) */}
-          {isGenerating && !hasPartialBatch ? (
-            <div className="no-print flex-1 flex flex-col items-center justify-center p-8 text-center">
-              <div className="w-full max-w-2xl bg-white border border-slate-200 rounded-xl p-8 space-y-4">
-                <div className="text-sm font-semibold text-slate-900">
-                  Crafting {form.questionCount} PYQ-calibrated {form.subject}{' '}
-                  {form.paperType === 'test' ? 'Test Paper' : 'DPP'} questions for Class{' '}
-                  {form.classLevel} ({parseInt(form.classLevel, 10) <= 10 ? `${form.juniorBoard} · ${form.juniorTier}` : form.seniorExam})...
-                </div>
-                <p className="text-xs text-slate-500">
-                  {progressMsg ||
-                    `Typesetting LaTeX equations, rendering vector diagrams (${form.diagramPercentage}% target), and compiling separate Answer Key & Solutions.`}
-                </p>
-                <div className="space-y-3 pt-2">
-                  <div className="h-4 bg-slate-100 rounded animate-pulse w-3/4 mx-auto" />
-                  <div className="h-24 bg-slate-100 rounded animate-pulse" />
-                  <div className="h-24 bg-slate-100 rounded animate-pulse" />
+          {isGenerating && !hasPartialBatch ? (() => {
+            const sampleBp =
+              form.paperType === 'sample_paper'
+                ? getSamplePaperBlueprint(form.sampleExamId || 'neet_180')
+                : null;
+            const sampleTotal = sampleBp
+              ? getBlueprintStats(sampleBp, form.subject).totalQuestions
+              : form.questionCount;
+            return (
+              <div className="no-print flex-1 flex flex-col items-center justify-center p-8 text-center">
+                <div className="w-full max-w-2xl bg-white border border-slate-200 rounded-xl p-8 space-y-4">
+                  <div className="text-sm font-semibold text-slate-900">
+                    {sampleBp
+                      ? `Crafting ${sampleTotal}-Question Official ${sampleBp.title} (${form.sampleSyllabusScope === 'selected' ? 'Selected Chapters' : 'Full Syllabus'})...`
+                      : `Crafting ${form.questionCount} PYQ-calibrated ${form.subject} ${
+                          form.paperType === 'test' ? 'Test Paper' : 'DPP'
+                        } questions for Class ${form.classLevel} (${
+                          parseInt(form.classLevel, 10) <= 10
+                            ? `${form.juniorBoard} · ${form.juniorTier}`
+                            : form.seniorExam
+                        })...`}
+                  </div>
+                  <p className="text-xs text-slate-500">
+                    {progressMsg ||
+                      `Typesetting LaTeX equations, rendering vector diagrams (${form.diagramPercentage}% target), and compiling separate Answer Key & Solutions.`}
+                  </p>
+                  <div className="space-y-3 pt-2">
+                    <div className="h-4 bg-slate-100 rounded animate-pulse w-3/4 mx-auto" />
+                    <div className="h-24 bg-slate-100 rounded animate-pulse" />
+                    <div className="h-24 bg-slate-100 rounded animate-pulse" />
+                  </div>
                 </div>
               </div>
-            </div>
-          ) : (
+            );
+          })() : (
             <div className="print-scroll-area flex-1 overflow-auto bg-slate-200/70">
               <DppPaperView
                 dpp={dpp}
