@@ -1,4 +1,4 @@
-import { ClassLevel } from '../types/dpp';
+import type { ClassLevel } from '../types/dpp.ts';
 import {
   CLASS_11_BIOLOGY_BASE,
   CLASS_11_CHEMISTRY_BASE,
@@ -11,8 +11,8 @@ import {
   CLASS_12_CHEMISTRY_JEE_ADV_EXTRAS,
   CLASS_12_MATHS_BASE,
   CLASS_12_PHYSICS_BASE,
-} from './seniorSyllabus';
-import { JUNIOR_CATALOG, JUNIOR_HUMANITIES_AND_CS } from './juniorSyllabus';
+} from './seniorSyllabus.ts';
+import { JUNIOR_CATALOG, JUNIOR_HUMANITIES_AND_CS } from './juniorSyllabus.ts';
 
 export interface ChapterEntry {
   chapter: string;

@@ -1,4 +1,4 @@
-import type { ChapterEntry } from './syllabusCatalog';
+import type { ChapterEntry } from './syllabusCatalog.ts';
 
 export const JUNIOR_CATALOG: Record<string, Record<string, Record<string, ChapterEntry[]>>> = {
   // ---------- CLASS 7 ----------

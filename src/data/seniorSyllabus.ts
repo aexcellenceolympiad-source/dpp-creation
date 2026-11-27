@@ -1,4 +1,4 @@
-import type { ChapterEntry } from './syllabusCatalog';
+import type { ChapterEntry } from './syllabusCatalog.ts';
 
 // ---------- CLASS 11 PHYSICS (CBSE / Board, JEE Mains, NEET, JEE Advanced) ----------
 export const CLASS_11_PHYSICS_BASE: ChapterEntry[] = [

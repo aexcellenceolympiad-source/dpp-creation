@@ -1,5 +1,5 @@
-import { ClassLevel, QuestionType, SamplePaperExamId } from '../types/dpp';
-import { getSyllabusChapters } from './syllabusCatalog';
+import type { ClassLevel, QuestionType, SamplePaperExamId } from '../types/dpp.ts';
+import { getSyllabusChapters } from './syllabusCatalog.ts';
 
 export interface SamplePaperSectionSpec {
   id: string;
