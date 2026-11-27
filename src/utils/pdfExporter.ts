@@ -211,12 +211,10 @@ export async function exportDppToPdf({
   const pageHeightMm = isLandscape ? 210 : 297;
   const targetWidthPx = isLandscape ? 1123 : 794;
 
-  // Clamp capture scale so large 30+ question papers never exceed mobile/desktop canvas limits
-  const estimatedHeightPx = Math.max(800, sheetElement.scrollHeight || 1123);
-  const maxCanvasPixels = 14_000_000;
-  const captureScale = Math.min(
-    2,
-    Math.max(1.15, Number(Math.sqrt(maxCanvasPixels / (targetWidthPx * estimatedHeightPx)).toFixed(2))),
+  const zoomFactor = Math.max(0.5, (sheetElement.getBoundingClientRect().width || targetWidthPx) / targetWidthPx);
+  const estimatedHeightPx = Math.max(
+    800,
+    Math.ceil(sheetElement.scrollHeight || (sheetElement.getBoundingClientRect().height / zoomFactor) || 1123),
   );
 
   const marginMm = Math.max(
@@ -224,138 +222,7 @@ export async function exportDppToPdf({
     Math.min(12, Number.isFinite(styleConfig.pageMarginMm) ? styleConfig.pageMarginMm : 6),
   );
   const useTransparentBg = Boolean(styleConfig.showWatermark);
-  const questionTopsCss: number[] = [];
-
-  const canvas = await html2canvas(sheetElement, {
-    scale: captureScale,
-    useCORS: true,
-    allowTaint: false,
-    backgroundColor: useTransparentBg ? null : styleConfig.pageColor || '#FFFFFF',
-    logging: false,
-    width: targetWidthPx,
-    windowWidth: targetWidthPx,
-    x: 0,
-    y: 0,
-    scrollX: 0,
-    scrollY: 0,
-    ignoreElements: (el) =>
-      el.classList?.contains('no-print') || el.classList?.contains('print-page-border-overlay'),
-    onclone: (clonedDoc, clonedEl) => {
-      // Unlock scroll containers in cloned document so nothing gets clipped
-      let parent: HTMLElement | null = clonedEl.parentElement;
-      while (parent) {
-        parent.style.overflow = 'visible';
-        parent.style.maxHeight = 'none';
-        parent.style.height = 'auto';
-        parent.style.transform = 'none';
-        parent = parent.parentElement;
-      }
-      if (clonedDoc.documentElement) {
-        clonedDoc.documentElement.style.overflow = 'visible';
-      }
-      if (clonedDoc.body) {
-        clonedDoc.body.style.overflow = 'visible';
-      }
-
-      // Normalize the A4 sheet clone
-      clonedEl.style.transform = 'none';
-      clonedEl.style.marginBottom = '0';
-      clonedEl.style.margin = '0';
-      clonedEl.style.width = `${targetWidthPx}px`;
-      clonedEl.style.minHeight = 'auto';
-      clonedEl.style.boxShadow = 'none';
-      clonedEl.style.backgroundColor = useTransparentBg
-        ? 'transparent'
-        : styleConfig.pageColor || '#FFFFFF';
-      clonedEl.style.letterSpacing = `${styleConfig.letterSpacing ?? 0}px`;
-      clonedEl.style.wordSpacing = `${styleConfig.wordSpacing ?? 0}px`;
-      clonedEl.style.lineHeight = String(styleConfig.lineHeight ?? 1.5);
-
-      // Remove screen border & padding (jsPDF draws vector borders + dynamic margins per page)
-      const screenFrame = clonedEl.querySelector('.print-screen-frame') as HTMLElement | null;
-      if (screenFrame) {
-        screenFrame.style.border = 'none';
-        screenFrame.style.outline = 'none';
-        screenFrame.style.minHeight = 'auto';
-        screenFrame.style.padding = '0px';
-        screenFrame.style.overflow = 'visible';
-      }
-
-      const contentCell = clonedEl.querySelector('.print-content-cell') as HTMLElement | null;
-      if (contentCell) {
-        contentCell.style.paddingLeft = '0px';
-        contentCell.style.paddingRight = '0px';
-      }
-
-      const sheetFooter = clonedEl.querySelector('.print-sheet-footer') as HTMLElement | null;
-      if (sheetFooter) {
-        sheetFooter.style.paddingLeft = '0px';
-        sheetFooter.style.paddingRight = '0px';
-        sheetFooter.style.paddingBottom = '0px';
-      }
-
-      // Enforce explicit 2-column layout in export even on narrow mobile screens
-      if (styleConfig.columns === 2) {
-        clonedEl.querySelectorAll('.print\\:columns-2').forEach((el) => {
-          const colEl = el as HTMLElement;
-          colEl.style.columnCount = '2';
-          colEl.style.columnGap = '20px';
-          colEl.style.columnRule = '1px solid rgba(148, 163, 184, 0.35)';
-        });
-      }
-
-      // Enforce explicit 4-options-in-1-line grid when selected
-      if (styleConfig.mcqOptionsLayout === 2) {
-        clonedEl.querySelectorAll('.mcq-options-grid-4').forEach((el) => {
-          const gridEl = el as HTMLElement;
-          gridEl.style.display = 'grid';
-          gridEl.style.gridTemplateColumns = 'repeat(4, minmax(0, 1fr))';
-          gridEl.style.columnGap = '4px';
-        });
-      }
-
-      // Bake explicit pixel dimensions and resolve currentColor for inline SVGs
-      clonedEl.querySelectorAll('svg').forEach((svg) => {
-        const rect = svg.getBoundingClientRect();
-        if (rect.width > 0 && rect.height > 0) {
-          if (!svg.getAttribute('width')) {
-            svg.setAttribute('width', `${Math.round(rect.width)}`);
-          }
-          if (!svg.getAttribute('height')) {
-            svg.setAttribute('height', `${Math.round(rect.height)}`);
-          }
-        }
-        const computedColor =
-          clonedDoc.defaultView?.getComputedStyle(svg).color ||
-          styleConfig.figureColor ||
-          '#0F172A';
-        svg.style.color = computedColor;
-        svg.querySelectorAll('[stroke="currentColor"]').forEach((node) => {
-          node.setAttribute('stroke', computedColor);
-        });
-        svg.querySelectorAll('[fill="currentColor"]').forEach((node) => {
-          node.setAttribute('fill', computedColor);
-        });
-      });
-
-      // Force layout reflow and record safe break points in 1-column mode
-      void clonedEl.offsetHeight;
-      if (styleConfig.columns === 1) {
-        const cloneRect = clonedEl.getBoundingClientRect();
-        clonedEl.querySelectorAll('.question-block-avoid-break').forEach((el) => {
-          const r = el.getBoundingClientRect();
-          const topPx = r.top - cloneRect.top;
-          if (topPx > 20) {
-            questionTopsCss.push(topPx);
-          }
-        });
-      }
-    },
-  });
-
-  if (!canvas || canvas.width === 0 || canvas.height === 0) {
-    throw new Error('Could not capture sheet canvas. Please try zooming to 100% or use Print.');
-  }
+  const bgRgb = hexToRgb(styleConfig.pageColor || '#FFFFFF');
 
   const pdf = new jsPDF({
     orientation: isLandscape ? 'landscape' : 'portrait',
@@ -369,132 +236,364 @@ export async function exportDppToPdf({
   const marginBottomMm = marginMm === 0 ? 0 : Math.max(marginMm, 4);
   const usableWidthMm = Math.max(50, pageWidthMm - marginXMm * 2);
   const usableHeightMm = Math.max(50, pageHeightMm - marginTopMm - marginBottomMm);
+  const [pr, pg, pb] = hexToRgb(styleConfig.pageColor || '#FFFFFF');
+  const [fr, fg, fb] = hexToRgb(styleConfig.footerStyle?.color || '#475569');
 
-  const canvasPxPerMm = canvas.width / usableWidthMm;
-  const maxSliceHeightPx = Math.max(100, Math.floor(usableHeightMm * canvasPxPerMm));
-  const bgRgb = hexToRgb(styleConfig.pageColor || '#FFFFFF');
-
-  const slices: { startY: number; endY: number }[] = [];
-  let currentY = 0;
-
-  while (currentY < canvas.height - 4) {
-    const idealEndY = currentY + maxSliceHeightPx;
-    if (idealEndY >= canvas.height) {
-      slices.push({ startY: currentY, endY: canvas.height });
-      break;
+  const prepareClonedSheet = (clonedDoc: Document, clonedEl: HTMLElement) => {
+    let parent: HTMLElement | null = clonedEl.parentElement;
+    while (parent) {
+      parent.style.overflow = 'visible';
+      parent.style.maxHeight = 'none';
+      parent.style.height = 'auto';
+      parent.style.transform = 'none';
+      parent = parent.parentElement;
+    }
+    if (clonedDoc.documentElement) {
+      clonedDoc.documentElement.style.overflow = 'visible';
+    }
+    if (clonedDoc.body) {
+      clonedDoc.body.style.overflow = 'visible';
     }
 
-    let chosenEndY = idealEndY;
+    clonedEl.style.transform = 'none';
+    clonedEl.style.marginBottom = '0';
+    clonedEl.style.margin = '0';
+    clonedEl.style.width = `${targetWidthPx}px`;
+    clonedEl.style.minHeight = 'auto';
+    clonedEl.style.boxShadow = 'none';
+    clonedEl.style.backgroundColor = useTransparentBg
+      ? 'transparent'
+      : styleConfig.pageColor || '#FFFFFF';
+    clonedEl.style.letterSpacing = `${styleConfig.letterSpacing ?? 0}px`;
+    clonedEl.style.wordSpacing = `${styleConfig.wordSpacing ?? 0}px`;
+    clonedEl.style.lineHeight = String(styleConfig.lineHeight ?? 1.5);
 
-    if (styleConfig.columns === 1 && questionTopsCss.length > 0) {
-      const candidateTops = questionTopsCss
-        .map((t) => Math.floor(t * captureScale))
-        .filter((t) => t > currentY + maxSliceHeightPx * 0.45 && t <= idealEndY);
+    const screenFrame = clonedEl.querySelector('.print-screen-frame') as HTMLElement | null;
+    if (screenFrame) {
+      screenFrame.style.border = 'none';
+      screenFrame.style.outline = 'none';
+      screenFrame.style.minHeight = 'auto';
+      screenFrame.style.padding = '0px';
+      screenFrame.style.overflow = 'visible';
+    }
 
-      if (candidateTops.length > 0) {
-        chosenEndY = Math.max(currentY + 50, candidateTops[candidateTops.length - 1] - 4);
+    const contentCell = clonedEl.querySelector('.print-content-cell') as HTMLElement | null;
+    if (contentCell) {
+      contentCell.style.paddingLeft = '0px';
+      contentCell.style.paddingRight = '0px';
+    }
+
+    const sheetFooter = clonedEl.querySelector('.print-sheet-footer') as HTMLElement | null;
+    if (sheetFooter) {
+      sheetFooter.style.paddingLeft = '0px';
+      sheetFooter.style.paddingRight = '0px';
+      sheetFooter.style.paddingBottom = '0px';
+    }
+
+    if (styleConfig.columns === 2) {
+      clonedEl.querySelectorAll('.print\\:columns-2').forEach((el) => {
+        const colEl = el as HTMLElement;
+        colEl.style.columnCount = '2';
+        colEl.style.columnGap = '20px';
+        colEl.style.columnRule = '1px solid rgba(148, 163, 184, 0.35)';
+      });
+    }
+
+    if (styleConfig.mcqOptionsLayout === 2) {
+      clonedEl.querySelectorAll('.mcq-options-flex-4, .mcq-options-grid-4').forEach((el) => {
+        const optEl = el as HTMLElement;
+        optEl.style.display = 'flex';
+        optEl.style.flexWrap = 'wrap';
+        optEl.style.justifyContent = 'space-between';
+        optEl.style.columnGap = '14px';
+        optEl.style.rowGap = '6px';
+      });
+    }
+
+    clonedEl.querySelectorAll('svg').forEach((svg) => {
+      const rect = svg.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        if (!svg.getAttribute('width')) {
+          svg.setAttribute('width', `${Math.round(rect.width)}`);
+        }
+        if (!svg.getAttribute('height')) {
+          svg.setAttribute('height', `${Math.round(rect.height)}`);
+        }
+      }
+      const computedColor =
+        clonedDoc.defaultView?.getComputedStyle(svg).color ||
+        styleConfig.figureColor ||
+        '#0F172A';
+      svg.style.color = computedColor;
+      svg.querySelectorAll('[stroke="currentColor"]').forEach((node) => {
+        node.setAttribute('stroke', computedColor);
+      });
+      svg.querySelectorAll('[fill="currentColor"]').forEach((node) => {
+        node.setAttribute('fill', computedColor);
+      });
+    });
+
+    void clonedEl.offsetHeight;
+    const questionTopsCss: number[] = [];
+    if (styleConfig.columns === 1) {
+      const cloneRect = clonedEl.getBoundingClientRect();
+      clonedEl.querySelectorAll('.question-block-avoid-break').forEach((el) => {
+        const r = el.getBoundingClientRect();
+        const topPx = r.top - cloneRect.top;
+        if (topPx > 20) {
+          questionTopsCss.push(topPx);
+        }
+      });
+    }
+    return {
+      fullHeightCss: Math.max(800, clonedEl.scrollHeight || estimatedHeightPx),
+      questionTopsCss,
+    };
+  };
+
+  let totalAddedPages = 0;
+
+  const appendCanvasSlicesToPdf = (
+    canvas: HTMLCanvasElement,
+    captureScale: number,
+    localQuestionTopsCss: number[],
+  ) => {
+    const canvasPxPerMm = canvas.width / usableWidthMm;
+    const maxSliceHeightPx = Math.max(100, Math.floor(usableHeightMm * canvasPxPerMm));
+    const slices: { startY: number; endY: number }[] = [];
+    let currentY = 0;
+
+    while (currentY < canvas.height - 4) {
+      const idealEndY = currentY + maxSliceHeightPx;
+      if (idealEndY >= canvas.height) {
+        slices.push({ startY: currentY, endY: canvas.height });
+        break;
+      }
+
+      let chosenEndY = idealEndY;
+
+      if (styleConfig.columns === 1 && localQuestionTopsCss.length > 0) {
+        const candidateTops = localQuestionTopsCss
+          .map((t) => Math.floor(t * captureScale))
+          .filter((t) => t > currentY + maxSliceHeightPx * 0.42 && t <= idealEndY);
+
+        if (candidateTops.length > 0) {
+          chosenEndY = Math.max(currentY + 50, candidateTops[candidateTops.length - 1] - 4);
+        } else {
+          chosenEndY = findCleanRowCut(
+            canvas,
+            idealEndY,
+            Math.floor(currentY + maxSliceHeightPx * 0.6),
+            bgRgb,
+            useTransparentBg,
+          );
+        }
       } else {
         chosenEndY = findCleanRowCut(
           canvas,
           idealEndY,
-          Math.floor(currentY + maxSliceHeightPx * 0.6),
+          Math.floor(currentY + maxSliceHeightPx * 0.65),
           bgRgb,
           useTransparentBg,
         );
       }
-    } else {
-      chosenEndY = findCleanRowCut(
+
+      if (chosenEndY <= currentY + 40) {
+        chosenEndY = idealEndY;
+      }
+
+      slices.push({ startY: currentY, endY: chosenEndY });
+      currentY = chosenEndY;
+    }
+
+    slices.forEach((slice) => {
+      if (totalAddedPages > 0) {
+        pdf.addPage('a4', isLandscape ? 'landscape' : 'portrait');
+      }
+      totalAddedPages++;
+
+      pdf.setFillColor(pr, pg, pb);
+      pdf.rect(0, 0, pageWidthMm, pageHeightMm, 'F');
+      drawWatermarkVector(pdf, pageWidthMm, pageHeightMm, styleConfig);
+
+      const sliceHeightPx = Math.max(1, slice.endY - slice.startY);
+      const pageCanvas = document.createElement('canvas');
+      pageCanvas.width = canvas.width;
+      pageCanvas.height = sliceHeightPx;
+      const pCtx = pageCanvas.getContext('2d');
+      if (!pCtx) {
+        throw new Error('Browser canvas context unavailable during PDF slicing.');
+      }
+
+      if (!useTransparentBg) {
+        pCtx.fillStyle = styleConfig.pageColor || '#FFFFFF';
+        pCtx.fillRect(0, 0, pageCanvas.width, pageCanvas.height);
+      }
+
+      pCtx.drawImage(
         canvas,
-        idealEndY,
-        Math.floor(currentY + maxSliceHeightPx * 0.65),
-        bgRgb,
-        useTransparentBg,
+        0,
+        slice.startY,
+        canvas.width,
+        sliceHeightPx,
+        0,
+        0,
+        canvas.width,
+        sliceHeightPx,
       );
-    }
 
-    if (chosenEndY <= currentY + 40) {
-      chosenEndY = idealEndY;
-    }
+      const imgFormat = useTransparentBg ? 'PNG' : 'JPEG';
+      const imgData = useTransparentBg
+        ? pageCanvas.toDataURL('image/png')
+        : pageCanvas.toDataURL('image/jpeg', 0.94);
 
-    slices.push({ startY: currentY, endY: chosenEndY });
-    currentY = chosenEndY;
+      if (!imgData || imgData === 'data:,') {
+        throw new Error('Generated PDF page image was empty.');
+      }
+
+      const drawnHeightMm = sliceHeightPx / canvasPxPerMm;
+      pdf.addImage(
+        imgData,
+        imgFormat,
+        marginXMm,
+        marginTopMm,
+        usableWidthMm,
+        drawnHeightMm,
+        undefined,
+        'FAST',
+      );
+
+      drawPageBorderVector(pdf, pageWidthMm, pageHeightMm, styleConfig);
+    });
+  };
+
+  if (estimatedHeightPx <= 8500) {
+    // Fast single-canvas capture for standard DPP / Test sheets
+    const maxCanvasPixels = 13_000_000;
+    const captureScale = Math.min(
+      2,
+      Math.max(1.25, Number(Math.sqrt(maxCanvasPixels / (targetWidthPx * estimatedHeightPx)).toFixed(2))),
+    );
+    let questionTopsCss: number[] = [];
+
+    const canvas = await html2canvas(sheetElement, {
+      scale: captureScale,
+      useCORS: true,
+      allowTaint: false,
+      backgroundColor: useTransparentBg ? null : styleConfig.pageColor || '#FFFFFF',
+      logging: false,
+      width: targetWidthPx,
+      windowWidth: targetWidthPx,
+      x: 0,
+      y: 0,
+      scrollX: 0,
+      scrollY: 0,
+      ignoreElements: (el) =>
+        el.classList?.contains('no-print') || el.classList?.contains('print-page-border-overlay'),
+      onclone: (clonedDoc, clonedEl) => {
+        questionTopsCss = prepareClonedSheet(clonedDoc, clonedEl).questionTopsCss;
+      },
+    });
+
+    if (!canvas || canvas.width === 0 || canvas.height === 0) {
+      throw new Error('Could not capture sheet canvas. Try Print -> Save as PDF.');
+    }
+    appendCanvasSlicesToPdf(canvas, captureScale, questionTopsCss);
+  } else {
+    // Safe multi-band capture for large 60-180 question papers so browser canvas limits never fail
+    const captureScale = 1.4;
+    const maxBandHeightCss = 5400;
+    let cursorCss = 0;
+    let totalHeightCss = estimatedHeightPx;
+
+    while (cursorCss < totalHeightCss - 4) {
+      let bandQuestionTops: number[] = [];
+      const requestedBandHeightCss = Math.min(
+        maxBandHeightCss,
+        Math.max(240, Math.ceil(totalHeightCss - cursorCss + 320)),
+      );
+      let bandEndCss = Math.min(totalHeightCss, cursorCss + requestedBandHeightCss);
+
+      const bandCanvas = await html2canvas(sheetElement, {
+        scale: captureScale,
+        useCORS: true,
+        allowTaint: false,
+        backgroundColor: useTransparentBg ? null : styleConfig.pageColor || '#FFFFFF',
+        logging: false,
+        width: targetWidthPx,
+        windowWidth: targetWidthPx,
+        height: requestedBandHeightCss,
+        x: 0,
+        y: cursorCss,
+        scrollX: 0,
+        scrollY: 0,
+        ignoreElements: (el) =>
+          el.classList?.contains('no-print') || el.classList?.contains('print-page-border-overlay'),
+        onclone: (clonedDoc, clonedEl) => {
+          const info = prepareClonedSheet(clonedDoc, clonedEl);
+          totalHeightCss = info.fullHeightCss;
+          bandQuestionTops = info.questionTopsCss;
+
+          const maxReachableCss = Math.min(totalHeightCss, cursorCss + requestedBandHeightCss);
+          // Align band end cleanly before a question block so no question straddles two bands
+          if (maxReachableCss < totalHeightCss) {
+            const safeBreaks = info.questionTopsCss.filter(
+              (t) => t > cursorCss + requestedBandHeightCss * 0.55 && t <= maxReachableCss,
+            );
+            bandEndCss =
+              safeBreaks.length > 0
+                ? Math.max(cursorCss + 40, safeBreaks[safeBreaks.length - 1] - 4)
+                : maxReachableCss;
+          } else {
+            bandEndCss = totalHeightCss;
+          }
+        },
+      });
+
+      if (!bandCanvas || bandCanvas.width === 0 || bandCanvas.height === 0) {
+        throw new Error('Could not capture large sheet band. Try Print -> Save as PDF.');
+      }
+
+      const cropPxH = Math.min(
+        bandCanvas.height,
+        Math.max(50, Math.floor((bandEndCss - cursorCss) * captureScale)),
+      );
+      let effectiveCanvas = bandCanvas;
+      if (cropPxH < bandCanvas.height - 8) {
+        const trimmed = document.createElement('canvas');
+        trimmed.width = bandCanvas.width;
+        trimmed.height = cropPxH;
+        const tCtx = trimmed.getContext('2d');
+        if (tCtx) {
+          tCtx.drawImage(bandCanvas, 0, 0, bandCanvas.width, cropPxH, 0, 0, bandCanvas.width, cropPxH);
+          effectiveCanvas = trimmed;
+        }
+      }
+
+      const localTops = bandQuestionTops
+        .filter((t) => t > cursorCss && t < bandEndCss)
+        .map((t) => t - cursorCss);
+      appendCanvasSlicesToPdf(effectiveCanvas, captureScale, localTops);
+      cursorCss = Math.max(cursorCss + 40, bandEndCss);
+    }
   }
 
-  const totalPages = Math.max(1, slices.length);
-  const [pr, pg, pb] = hexToRgb(styleConfig.pageColor || '#FFFFFF');
-  const [fr, fg, fb] = hexToRgb(styleConfig.footerStyle?.color || '#475569');
-
-  slices.forEach((slice, idx) => {
-    if (idx > 0) {
-      pdf.addPage('a4', isLandscape ? 'landscape' : 'portrait');
-    }
-
-    pdf.setFillColor(pr, pg, pb);
-    pdf.rect(0, 0, pageWidthMm, pageHeightMm, 'F');
-
-    drawWatermarkVector(pdf, pageWidthMm, pageHeightMm, styleConfig);
-
-    const sliceHeightPx = Math.max(1, slice.endY - slice.startY);
-    const pageCanvas = document.createElement('canvas');
-    pageCanvas.width = canvas.width;
-    pageCanvas.height = sliceHeightPx;
-    const pCtx = pageCanvas.getContext('2d');
-    if (!pCtx) {
-      throw new Error('Browser canvas context unavailable during PDF slicing.');
-    }
-
-    if (!useTransparentBg) {
-      pCtx.fillStyle = styleConfig.pageColor || '#FFFFFF';
-      pCtx.fillRect(0, 0, pageCanvas.width, pageCanvas.height);
-    }
-
-    pCtx.drawImage(
-      canvas,
-      0,
-      slice.startY,
-      canvas.width,
-      sliceHeightPx,
-      0,
-      0,
-      canvas.width,
-      sliceHeightPx,
-    );
-
-    const imgFormat = useTransparentBg ? 'PNG' : 'JPEG';
-    const imgData = useTransparentBg
-      ? pageCanvas.toDataURL('image/png')
-      : pageCanvas.toDataURL('image/jpeg', 0.94);
-
-    if (!imgData || imgData === 'data:,') {
-      throw new Error('Generated PDF page image was empty.');
-    }
-
-    const drawnHeightMm = sliceHeightPx / canvasPxPerMm;
-    pdf.addImage(
-      imgData,
-      imgFormat,
-      marginXMm,
-      marginTopMm,
-      usableWidthMm,
-      drawnHeightMm,
-      undefined,
-      'FAST',
-    );
-
-    drawPageBorderVector(pdf, pageWidthMm, pageHeightMm, styleConfig);
-
-    if (totalPages > 1 && marginBottomMm >= 3) {
-      pdf.setTextColor(fr, fg, fb);
-      pdf.setFont('helvetica', 'normal');
-      pdf.setFontSize(8);
+  // Stamp consistent Page X / TotalPages footers across all generated pages
+  const finalTotalPages = Math.max(1, totalAddedPages);
+  if (finalTotalPages > 1 && marginBottomMm >= 3) {
+    pdf.setTextColor(fr, fg, fb);
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(8);
+    for (let p = 1; p <= finalTotalPages; p++) {
+      pdf.setPage(p);
       pdf.text(
-        `${mode === 'questions' ? 'Question Paper' : 'Answer Key'} · Page ${idx + 1} / ${totalPages}`,
+        `${mode === 'questions' ? 'Question Paper' : 'Answer Key'} · Page ${p} / ${finalTotalPages}`,
         pageWidthMm / 2,
         pageHeightMm - Math.max(2.2, marginBottomMm * 0.45),
         { align: 'center' },
       );
     }
-  });
+  }
 
   const finalName = fileName.endsWith('.pdf') ? fileName : `${fileName}.pdf`;
   triggerPdfDownload(pdf, finalName);

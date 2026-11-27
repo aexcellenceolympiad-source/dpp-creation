@@ -17,6 +17,7 @@ import {
 import { StudioSidebar, SidebarTab } from './components/StudioSidebar';
 import { DppPaperView } from './components/DppPaperView';
 import { OfflineIndicator, PWAInstallButton } from './components/PWAInstallButton';
+import { exportDppToPdf } from './utils/pdfExporter';
 
 const STYLE_STORAGE_KEY = 'safal_dpp_style_v1';
 const ACTIVE_DPP_STORAGE_KEY = 'safal_active_dpp_v1';
@@ -965,7 +966,6 @@ export default function App() {
         throw new Error('Preview sheet not ready for export.');
       }
 
-      const { exportDppToPdf } = await import('./utils/pdfExporter');
       await exportDppToPdf({
         sheetElement: sheetEl,
         styleConfig,
