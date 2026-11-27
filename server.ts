@@ -183,10 +183,10 @@ function extractJsonText(raw: string): string {
 function cleanLatexText(val: unknown): string {
   if (val == null) return '';
   return String(val)
-    .replace(/\t(?=(?:heta|imes|ext|an|au|riangle|frac|binom|o\b))/g, '\\t')
+    .replace(/\t(?=(?:heta|imes|ext|an|au|riangle|frac|binom|o\b|ilde))/g, '\\t')
     .replace(/\f(?=(?:rac|orall|lat))/g, '\\f')
-    .replace(/\r(?=(?:ho|ight|eg|angle))/g, '\\r')
-    .replace(/\x08(?=(?:eta|ar|inom|egin|ig|ullet|ecause))/g, '\\b');
+    .replace(/\r(?=(?:ho|ight|eg|angle|ightarrow|ightleftharpoons))/g, '\\r')
+    .replace(/\x08(?=(?:eta|ar|inom|egin|ig|ullet|ecause|matrix))/g, '\\b');
 }
 
 function normalizeQuestion(
@@ -981,11 +981,11 @@ ${levelCalibration}
 QUALITY, LATEX & DIAGRAM SPEED RULES:
 1. Verify algebra, units, signs, and stoichiometry before finalizing "correctAnswer" & "solutionSteps". Single-correct MCQ must have 1 exact answer + 3 realistic distractors.
 2. STRICT LATEX WRAPPING: Wrap EVERY math expression, variable, equation, degree/angle, and chemical formula in $...$ (e.g., "$30^\\\\circ$", "$\\\\frac{1}{2}$", "$\\\\ce{H2SO4}$"). NEVER write bare "30^\\circ" or "\\frac{1}{2}" outside $...$. Double-escape JSON backslashes properly. Keep "solutionSteps" crisp (2–4 steps).
-3. FAST ZERO-ERROR DIAGRAMS (Prefer structured engines over raw SVG):
-   - Organic Chemistry (benzene, substituted aromatics, mechanisms): use diagram.kind='chemistry_smiles' (valid SMILES like "c1ccccc1") or 'chemistry_reaction'.
-   - Maths Graphs (lines, parabolas, trig, circles, shaded integrals): use diagram.kind='math_plot' with exact mathPlot bounds, functions/lines/circles/points/shade.
-   - Euclidean/Coordinate Geometry (triangles, chords, tangents, angles): use diagram.kind='geometry' with exact vertices, segments, circles, angleArcs.
-   - Physics Mechanics/Circuits/Optics/Projectiles: use diagram.kind='physics_diagram' with preset ('incline_block', 'pulley_two_mass', 'circuit_loop', 'ray_optics', 'projectile', 'fbd_block'), OR 'svg' only for custom setups/Biology.
+3. STRUCTURED VECTOR ENGINES (STRICT — NEVER HAND-DRAW BENZENE OR GRAPHS AS RAW SVG):
+   - Organic Chemistry (benzene, substituted aromatics, phenol, aniline, mechanisms): ALWAYS use diagram.kind='chemistry_smiles' (valid canonical SMILES like "c1ccccc1", "Oc1ccccc1", "O=[N+]([O-])c1ccccc1") or 'chemistry_reaction', and put SMILES in option.smiles when options are structures. NEVER use 'svg' for organic structures.
+   - Maths Graphs (lines, parabolas, trig, circles, shaded integrals): ALWAYS use diagram.kind='math_plot' with exact mathPlot bounds, functions/lines/circles/points/shade.
+   - Euclidean/Coordinate Geometry (triangles, chords, tangents, angles): ALWAYS use diagram.kind='geometry' with exact vertices, segments, circles, angleArcs.
+   - Physics Mechanics/Circuits/Optics/Projectiles: ALWAYS use diagram.kind='physics_diagram' with preset ('incline_block', 'pulley_two_mass', 'circuit_loop', 'ray_optics', 'projectile', 'fbd_block'). Use 'svg' ONLY for Biology or setups not covered above.
 4. Type format: 'assertion_reason' -> assertion, reason, 4 options A-D; 'match_following' -> matchColumns (P,Q,R,S & 1,2,3,4) + 4 options A-D; 'true_false' -> options A: True, B: False; 'fill_blank' -> "________" in stem; 'subjective' -> empty options.
 ${body.customInstructions?.trim() ? `\nTEACHER INSTRUCTIONS (STRICT):\n${body.customInstructions.trim()}` : ''}`;
 }
@@ -1048,7 +1048,7 @@ STRICT QUALITY, LATEX & SPEED RULES:
 1. Mirror genuine latest PYQ & official sample paper difficulty, wording, units, and traps. Verify every answer key carefully before writing JSON.
 2. STRICT LATEX WRAPPING: Wrap EVERY math expression, variable, equation, degree/angle, and chemical formula in $...$ (e.g., "$30^\\\\circ$", "$\\\\frac{1}{2}$", "$\\\\ce{H2SO4}$"). Double-escape JSON backslashes properly.
 3. Keep "solutionSteps" concise & crystal clear (2–3 crisp steps per question) for fast generation.
-4. Use structured diagram engines ('chemistry_smiles', 'chemistry_reaction', 'math_plot', 'geometry', 'physics_diagram') or compact <svg viewBox="0 0 360 190"> with stroke="currentColor" when needed.
+4. STRICT STRUCTURED DIAGRAMS (NEVER hand-draw benzene or graphs as raw SVG): ALWAYS use 'chemistry_smiles' / 'chemistry_reaction' with valid canonical SMILES (e.g. "c1ccccc1", "Oc1ccccc1") for organic chemistry & option.smiles for structural options; use 'math_plot' for Maths graphs, 'geometry' for geometry figures, 'physics_diagram' for Physics mechanics/circuits/optics; use compact <svg viewBox="0 0 360 190"> ONLY for Biology or custom apparatus.
 5. Type format: 'mcq'/'multiple_correct' -> 4 options A-D; 'assertion_reason' -> assertion, reason, 4 CBSE options A-D; 'match_following' -> matchColumns (P,Q,R,S & 1,2,3,4) + 4 options A-D; 'fill_blank' -> numerical/integer prompt with "________" and exact number in correctAnswer; 'subjective' -> empty options (include sub-parts (i), (ii), (iii) for 4-mark Case Studies).
 ${params.customInstructions?.trim() ? `\nTEACHER INSTRUCTIONS (STRICT):\n${params.customInstructions.trim()}` : ''}`;
 }

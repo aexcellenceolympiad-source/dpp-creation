@@ -383,16 +383,24 @@ export const MathPlotSvg: React.FC<{
       </g>
 
       {/* Axis labels & ticks */}
-      <g fill={color} fontSize="9.5" fontFamily="serif">
+      <g
+        fill={color}
+        fontSize="9.5"
+        fontFamily="serif"
+        paintOrder="stroke"
+        stroke="#FFFFFF"
+        strokeWidth="3"
+        strokeLinejoin="round"
+      >
         <text x={padL + pw + 8} y={axisY + 11} fontWeight="bold" fontStyle="italic">x</text>
         <text x={axisX + 6} y={padT - 2} fontWeight="bold" fontStyle="italic">y</text>
         {xTicks.filter((v) => Math.abs(v) > 1e-6).map((xv) => (
-          <text key={`tx-${xv}`} x={mapX(xv)} y={Math.min(H - 6, axisY + 12)} textAnchor="middle" opacity="0.75">
+          <text key={`tx-${xv}`} x={mapX(xv)} y={Math.min(H - 6, axisY + 12)} textAnchor="middle" opacity="0.88">
             {xv}
           </text>
         ))}
         {yTicks.filter((v) => Math.abs(v) > 1e-6).map((yv) => (
-          <text key={`ty-${yv}`} x={Math.max(12, axisX - 6)} y={mapY(yv) + 3} textAnchor="end" opacity="0.75">
+          <text key={`ty-${yv}`} x={Math.max(12, axisX - 6)} y={mapY(yv) + 3} textAnchor="end" opacity="0.88">
             {yv}
           </text>
         ))}
@@ -450,42 +458,49 @@ export const MathPlotSvg: React.FC<{
         })}
       </g>
 
-      {/* Labels & Points (unclipped for clarity) */}
-      {functionPaths.map((fp, idx) =>
-        fp.label ? (
-          <text key={`fl-${idx}`} x={fp.lx} y={fp.ly} fontSize="10.5" fontFamily="serif" fontStyle="italic" fill={color}>
-            {fp.label}
-          </text>
-        ) : null,
-      )}
-      {lineGeoms.map((lg, idx) =>
-        lg?.label ? (
-          <text key={`ll-${idx}`} x={Math.min(W - 40, Math.max(padL + 10, lg.mx + 6))} y={Math.max(padT + 12, lg.my - 6)} fontSize="10.5" fontFamily="serif" fill={color}>
-            {lg.label}
-          </text>
-        ) : null,
-      )}
-      {(plot.points || []).map((pt, idx) => {
-        const px = mapX(pt.x);
-        const py = mapY(pt.y);
-        return (
-          <g key={`pt-${idx}`}>
-            <circle
-              cx={px}
-              cy={py}
-              r={3.2}
-              fill={pt.open ? '#FFFFFF' : color}
-              stroke={color}
-              strokeWidth="1.4"
-            />
-            {pt.label && (
-              <text x={px + 6} y={py - 5} fontSize="10.5" fontFamily="serif" fill={color} fontWeight="600">
-                {pt.label}
-              </text>
-            )}
-          </g>
-        );
-      })}
+      {/* Labels & Points (unclipped with crisp white halo for clarity) */}
+      <g
+        paintOrder="stroke"
+        stroke="#FFFFFF"
+        strokeWidth="3.2"
+        strokeLinejoin="round"
+      >
+        {functionPaths.map((fp, idx) =>
+          fp.label ? (
+            <text key={`fl-${idx}`} x={fp.lx} y={fp.ly} fontSize="10.5" fontFamily="serif" fontStyle="italic" fill={color}>
+              {fp.label}
+            </text>
+          ) : null,
+        )}
+        {lineGeoms.map((lg, idx) =>
+          lg?.label ? (
+            <text key={`ll-${idx}`} x={Math.min(W - 40, Math.max(padL + 10, lg.mx + 8))} y={Math.max(padT + 12, lg.my - 7)} fontSize="10.5" fontFamily="serif" fill={color}>
+              {lg.label}
+            </text>
+          ) : null,
+        )}
+        {(plot.points || []).map((pt, idx) => {
+          const px = mapX(pt.x);
+          const py = mapY(pt.y);
+          return (
+            <g key={`pt-${idx}`}>
+              <circle
+                cx={px}
+                cy={py}
+                r={3.2}
+                fill={pt.open ? '#FFFFFF' : color}
+                stroke={color}
+                strokeWidth="1.4"
+              />
+              {pt.label && (
+                <text x={px + 6} y={py - 5} fontSize="10.5" fontFamily="serif" fill={color} fontWeight="600">
+                  {pt.label}
+                </text>
+              )}
+            </g>
+          );
+        })}
+      </g>
     </svg>
   );
 };
@@ -658,7 +673,19 @@ export const GeometrySvg: React.FC<{
           <g key={`gv-${v.id}`}>
             <circle cx={px} cy={py} r={2.4} fill={color} />
             {v.label && (
-              <text x={lx} y={ly} textAnchor="middle" fontSize="11.5" fontWeight="bold" fontFamily="serif" fill={color}>
+              <text
+                x={lx}
+                y={ly}
+                textAnchor="middle"
+                fontSize="11.5"
+                fontWeight="bold"
+                fontFamily="serif"
+                fill={color}
+                paintOrder="stroke"
+                stroke="#FFFFFF"
+                strokeWidth="3"
+                strokeLinejoin="round"
+              >
                 {v.label}
               </text>
             )}

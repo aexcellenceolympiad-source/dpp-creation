@@ -685,48 +685,68 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                             {q.options &&
                               q.options.length > 0 &&
                               q.type !== 'subjective' &&
-                              q.type !== 'fill_blank' && (
-                                <div
-                                  className={`grid ${
-                                    mcqLayout === 2
-                                      ? 'mcq-options-grid-4 grid-cols-4 gap-x-1 gap-y-0.5'
-                                      : mcqLayout === 1
-                                        ? 'grid-cols-2 gap-x-3 gap-y-1'
-                                        : q.options.some((o) => {
-                                              const t = o.text || '';
-                                              return o.smiles || t.length > 22 || /[=\\]frac|\\sqrt/.test(t);
-                                            })
-                                          ? 'grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5'
-                                          : 'grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-1.5'
-                                  }`}
-                                  style={{ marginTop: `${Math.max(1, Math.round(paraGapPx * 0.45))}px` }}
-                                >
-                                  {q.options.map((opt) => (
-                                    <div
-                                      key={opt.label}
-                                      className="flex items-start gap-1 min-w-0"
-                                      style={{
-                                        ...toTextCss(styleConfig.optionStyle),
-                                        lineHeight: lineHeightVal,
-                                      }}
-                                    >
-                                      <span className="font-semibold shrink-0">({opt.label})</span>
-                                      <div className="flex flex-col gap-0.5 min-w-0">
-                                        <MathText text={opt.text} />
-                                        {opt.smiles && (
-                                          <MoleculeSvg
-                                            smiles={opt.smiles}
-                                            color={styleConfig.figureColor}
-                                            strokeWidth={styleConfig.figureStrokeWidth}
-                                            maxWidth={130}
-                                            maxHeight={90}
-                                          />
-                                        )}
+                              q.type !== 'fill_blank' && (() => {
+                                const hasDiagramOpt = q.options.some((o) => Boolean(o.smiles));
+                                const maxVisualLen = Math.max(
+                                  0,
+                                  ...q.options.map((o) =>
+                                    (o.text || '')
+                                      .replace(/\$+/g, '')
+                                      .replace(/\\(?:frac|dfrac|tfrac|ce|left|right|mathrm|text|sqrt|vec|overline)\b/g, 'xx')
+                                      .replace(/\\[a-zA-Z]+/g, 'x')
+                                      .replace(/[{}]/g, '').length,
+                                  ),
+                                );
+                                const hasHeavyMath = q.options.some((o) =>
+                                  /\\(?:frac|dfrac|sqrt|int|sum|begin|ce|vec)/.test(o.text || ''),
+                                );
+                                const layoutClass =
+                                  mcqLayout === 2
+                                    ? 'mcq-options-flex-4 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1.5'
+                                    : mcqLayout === 1
+                                      ? 'grid grid-cols-2 gap-x-4 gap-y-1.5'
+                                      : hasDiagramOpt || maxVisualLen > 46
+                                        ? hasDiagramOpt
+                                          ? 'grid grid-cols-2 sm:grid-cols-4 gap-x-3 gap-y-2'
+                                          : 'grid grid-cols-1 gap-y-1.5'
+                                        : hasHeavyMath || maxVisualLen > 18
+                                          ? 'grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5'
+                                          : 'grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-1.5';
+
+                                return (
+                                  <div
+                                    className={layoutClass}
+                                    style={{ marginTop: `${Math.max(1, Math.round(paraGapPx * 0.45))}px` }}
+                                  >
+                                    {q.options.map((opt) => (
+                                      <div
+                                        key={opt.label}
+                                        className={`flex items-baseline gap-1.5 min-w-0 ${
+                                          mcqLayout === 2 ? 'shrink-0 max-w-full' : ''
+                                        }`}
+                                        style={{
+                                          ...toTextCss(styleConfig.optionStyle),
+                                          lineHeight: lineHeightVal,
+                                        }}
+                                      >
+                                        <span className="font-semibold shrink-0">({opt.label})</span>
+                                        <div className="flex flex-col gap-0.5 min-w-0">
+                                          <MathText text={opt.text} />
+                                          {opt.smiles && (
+                                            <MoleculeSvg
+                                              smiles={opt.smiles}
+                                              color={styleConfig.figureColor}
+                                              strokeWidth={styleConfig.figureStrokeWidth}
+                                              maxWidth={130}
+                                              maxHeight={90}
+                                            />
+                                          )}
+                                        </div>
                                       </div>
-                                    </div>
-                                  ))}
-                                </div>
-                              )}
+                                    ))}
+                                  </div>
+                                );
+                              })()}
 
                             {/* Subjective writing note */}
                             {isSubjective && (

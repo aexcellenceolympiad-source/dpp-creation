@@ -443,7 +443,6 @@ export default function App() {
 
     if (seedQuestions.length > 0) {
       setHasPartialBatch(true);
-      setDocMode('questions');
     }
 
     let nextQueueIdx = 0;
@@ -595,7 +594,6 @@ export default function App() {
 
           setDpp(updatedDoc);
           setHasPartialBatch(true);
-          setDocMode('questions');
 
           const nextCheckpoint: ResumeCheckpoint = {
             ...initialCheckpoint,
@@ -789,6 +787,7 @@ export default function App() {
         questions: [],
         isStarterPreview: false,
       });
+      setDocMode('questions');
       setResumeCheckpoint(freshCheckpoint);
 
       await executeBatchPlan(freshCheckpoint, [], controller);
@@ -1129,7 +1128,7 @@ export default function App() {
                 }`}
               >
                 <KeyRound className="w-3.5 h-3.5" />
-                <span>Answer Key & Solutions PDF</span>
+                <span>Answer Key & Solutions PDF ({dpp.questions.length})</span>
               </button>
             </div>
 

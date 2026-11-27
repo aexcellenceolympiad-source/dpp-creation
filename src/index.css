@@ -31,29 +31,46 @@
   stroke-width: var(--fig-stroke, 1.8px);
 }
 
-/* OpenChemLib SVG dynamic stroke thickness & ink styling */
+/* OpenChemLib SVG crisp textbook rendering */
 .chemistry-svg-wrap svg {
   display: block;
   max-width: 100%;
   height: auto;
+  overflow: visible;
 }
 
-.chemistry-svg-wrap svg line,
-.chemistry-svg-wrap svg path,
-.chemistry-svg-wrap svg polygon {
-  stroke-width: var(--fig-stroke, 1.8px);
+.chemistry-svg-wrap svg text {
+  letter-spacing: normal !important;
+  word-spacing: normal !important;
 }
 
-/* KaTeX refinement inside colored question/option blocks */
+/* KaTeX refinement: isolate from global letter/word spacing sliders and prevent mid-formula tearing */
+.katex,
+.katex * {
+  letter-spacing: normal !important;
+  word-spacing: normal !important;
+}
+
 .katex {
   font-size: 1.04em;
   color: inherit;
+}
+
+.katex-inline-nowrap .katex {
+  white-space: nowrap !important;
 }
 
 .katex-display {
   margin: 0.45em 0;
   overflow-x: auto;
   overflow-y: hidden;
+}
+
+#dpp-export-sheet {
+  text-rendering: optimizeLegibility;
+  font-kerning: normal;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 /* Clean print-to-PDF isolation with 0mm edge-to-edge border */
