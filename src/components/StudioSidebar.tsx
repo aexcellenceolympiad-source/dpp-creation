@@ -1,5 +1,5 @@
 import React from 'react';
-import { RotateCcw, Sparkles, X } from 'lucide-react';
+import { Play, RotateCcw, Sparkles, X } from 'lucide-react';
 import {
   CLASS_LEVELS,
   JUNIOR_BOARDS,
@@ -52,6 +52,8 @@ interface StudioSidebarProps {
   onStyleChange: (updater: (prev: DppStyleConfig) => DppStyleConfig) => void;
   onResetStyles: () => void;
   onGenerate: () => void;
+  onResumeGenerate?: () => void;
+  remainingResumeQs?: number;
   onCancelGenerate?: () => void;
   isGenerating: boolean;
   providers?: { gemini: boolean; groq: boolean };
@@ -180,6 +182,8 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
   onStyleChange,
   onResetStyles,
   onGenerate,
+  onResumeGenerate,
+  remainingResumeQs = 0,
   onCancelGenerate,
   isGenerating,
   providers,
@@ -2702,47 +2706,76 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
 
       {/* Sticky Bottom Generate CTA */}
       <div className="p-3.5 border-t border-slate-200 bg-slate-50 flex items-center gap-2">
-        <button
-          type="button"
-          onClick={onGenerate}
-          disabled={
-            isGenerating ||
-            (isSamplePaper
-              ? sampleScope === 'selected' && selectedSampleChapters.length === 0
-              : isMixedMode
-                ? mixedTopics.length === 0
-                : !form.chapter.trim() || !form.topic.trim())
-          }
-          className="flex-1 py-2.5 px-4 inline-flex items-center justify-center gap-2 text-sm font-semibold text-white bg-blue-700 hover:bg-blue-800 disabled:bg-slate-400 rounded-lg transition-colors shadow-xs cursor-pointer"
-        >
-          <Sparkles className={`w-4 h-4 ${isGenerating ? 'animate-spin' : ''}`} />
-          <span>
-            {isGenerating
-              ? isSamplePaper
-                ? `Generating ${activeBlueprint.shortLabel} (${blueprintStats.totalQuestions} Qs)...`
-                : form.paperType === 'test'
-                  ? 'Generating Test Paper & Solutions...'
-                  : 'Generating PYQ DPP & Solutions...'
-              : isSamplePaper
-                ? `Generate ${activeBlueprint.shortLabel} Paper`
-                : form.paperType === 'test'
-                  ? isMixedMode
-                    ? 'Generate Mixed Test Paper'
-                    : 'Generate Test Paper & Answer Key'
+        {!isGenerating && remainingResumeQs > 0 && onResumeGenerate ? (
+          <>
+            <button
+              type="button"
+              onClick={onResumeGenerate}
+              className="flex-1 py-2.5 px-3.5 inline-flex items-center justify-center gap-2 text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors shadow-xs cursor-pointer"
+            >
+              <Play className="w-4 h-4 fill-current" />
+              <span>Continue (+{remainingResumeQs} Qs)</span>
+            </button>
+            <button
+              type="button"
+              onClick={onGenerate}
+              disabled={
+                isSamplePaper
+                  ? sampleScope === 'selected' && selectedSampleChapters.length === 0
                   : isMixedMode
-                    ? 'Generate Mixed-Topic DPP'
-                    : 'Generate DPP & Answer Key'}
-          </span>
-        </button>
+                    ? mixedTopics.length === 0
+                    : !form.chapter.trim() || !form.topic.trim()
+              }
+              title="Start fresh from Q1 (replaces saved partial progress)"
+              className="py-2.5 px-3 inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-100 disabled:bg-slate-100 disabled:text-slate-400 border border-slate-300 rounded-lg transition-colors cursor-pointer shrink-0"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Fresh</span>
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={onGenerate}
+            disabled={
+              isGenerating ||
+              (isSamplePaper
+                ? sampleScope === 'selected' && selectedSampleChapters.length === 0
+                : isMixedMode
+                  ? mixedTopics.length === 0
+                  : !form.chapter.trim() || !form.topic.trim())
+            }
+            className="flex-1 py-2.5 px-4 inline-flex items-center justify-center gap-2 text-sm font-semibold text-white bg-blue-700 hover:bg-blue-800 disabled:bg-slate-400 rounded-lg transition-colors shadow-xs cursor-pointer"
+          >
+            <Sparkles className={`w-4 h-4 ${isGenerating ? 'animate-spin' : ''}`} />
+            <span>
+              {isGenerating
+                ? isSamplePaper
+                  ? `Generating ${activeBlueprint.shortLabel} (${blueprintStats.totalQuestions} Qs)...`
+                  : form.paperType === 'test'
+                    ? 'Generating Test Paper & Solutions...'
+                    : 'Generating PYQ DPP & Solutions...'
+                : isSamplePaper
+                  ? `Generate ${activeBlueprint.shortLabel} Paper`
+                  : form.paperType === 'test'
+                    ? isMixedMode
+                      ? 'Generate Mixed Test Paper'
+                      : 'Generate Test Paper & Answer Key'
+                    : isMixedMode
+                      ? 'Generate Mixed-Topic DPP'
+                      : 'Generate DPP & Answer Key'}
+            </span>
+          </button>
+        )}
         {isGenerating && onCancelGenerate && (
           <button
             type="button"
             onClick={onCancelGenerate}
-            title="Stop Generation"
+            title="Pause Generation (completed batches stay saved)"
             className="py-2.5 px-3 inline-flex items-center justify-center gap-1 text-xs font-semibold text-red-700 bg-red-50 hover:bg-red-100 border border-red-200 rounded-lg transition-colors cursor-pointer"
           >
             <X className="w-4 h-4" />
-            <span>Stop</span>
+            <span>Pause</span>
           </button>
         )}
       </div>

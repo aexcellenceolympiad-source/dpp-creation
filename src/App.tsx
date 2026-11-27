@@ -3,7 +3,17 @@ import { Download, FileText, KeyRound, Printer, ZoomIn, ZoomOut, AlertCircle, Sp
 import { DEFAULT_STYLE_CONFIG, getChaptersForSelection, getRecommendedBooks } from './data/curriculum';
 import { getBlueprintStats, getSamplePaperBlueprint } from './data/samplePaperBlueprints';
 import { STARTER_DPP } from './data/starterDpp';
-import { DppDocument, DppQuestion, DppStyleConfig, GenerateDppPayload, TextStyleConfig } from './types/dpp';
+import {
+  AiProviderPref,
+  AiReasoningMode,
+  BatchGenerationPlan,
+  DppDocument,
+  DppQuestion,
+  DppStyleConfig,
+  GenerateDppPayload,
+  PlannedBatch,
+  TextStyleConfig,
+} from './types/dpp';
 import { StudioSidebar, SidebarTab } from './components/StudioSidebar';
 import { DppPaperView } from './components/DppPaperView';
 import { OfflineIndicator, PWAInstallButton } from './components/PWAInstallButton';
@@ -11,11 +21,34 @@ import { OfflineIndicator, PWAInstallButton } from './components/PWAInstallButto
 const STYLE_STORAGE_KEY = 'safal_dpp_style_v1';
 const ACTIVE_DPP_STORAGE_KEY = 'safal_active_dpp_v1';
 const HISTORY_DPP_STORAGE_KEY = 'safal_history_dpp_v1';
+const RESUME_CHECKPOINT_STORAGE_KEY = 'safal_resume_checkpoint_v1';
 
 interface SavedDppEntry {
   id: string;
   label: string;
   doc: DppDocument;
+}
+
+interface ResumeCheckpoint {
+  title: string;
+  subtitle: string;
+  metadata: DppDocument['metadata'];
+  totalQuestions: number;
+  batches: PlannedBatch[];
+  completedBatchIndices: number[];
+  aiMode: AiReasoningMode;
+  aiProvider: AiProviderPref;
+}
+
+function isValidResumeCheckpoint(val: unknown): val is ResumeCheckpoint {
+  if (!val || typeof val !== 'object') return false;
+  const cp = val as Record<string, unknown>;
+  return Boolean(
+    cp.metadata &&
+      Array.isArray(cp.batches) &&
+      cp.batches.length > 0 &&
+      Array.isArray(cp.completedBatchIndices),
+  );
 }
 
 function isValidDppDocument(val: unknown): val is DppDocument {
@@ -202,6 +235,39 @@ export default function App() {
     }
   }, [history]);
 
+  const [resumeCheckpoint, setResumeCheckpoint] = useState<ResumeCheckpoint | null>(() => {
+    try {
+      const saved = localStorage.getItem(RESUME_CHECKPOINT_STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (
+          isValidResumeCheckpoint(parsed) &&
+          parsed.completedBatchIndices.length < parsed.batches.length
+        ) {
+          return parsed;
+        }
+      }
+    } catch {
+      // Ignore storage error
+    }
+    return null;
+  });
+
+  useEffect(() => {
+    try {
+      if (
+        resumeCheckpoint &&
+        resumeCheckpoint.completedBatchIndices.length < resumeCheckpoint.batches.length
+      ) {
+        localStorage.setItem(RESUME_CHECKPOINT_STORAGE_KEY, JSON.stringify(resumeCheckpoint));
+      } else {
+        localStorage.removeItem(RESUME_CHECKPOINT_STORAGE_KEY);
+      }
+    } catch {
+      // Ignore storage error
+    }
+  }, [resumeCheckpoint]);
+
   const [isGenerating, setIsGenerating] = useState(false);
   const [isExporting, setIsExporting] = useState<'questions' | 'answers' | null>(null);
   const [isRefining, setIsRefining] = useState(false);
@@ -327,6 +393,280 @@ export default function App() {
     setProgressMsg('');
   };
 
+  const remainingResumeQs = resumeCheckpoint
+    ? resumeCheckpoint.batches
+        .filter((b) => !resumeCheckpoint.completedBatchIndices.includes(b.batchIndex))
+        .reduce((sum, b) => sum + b.batchSize, 0)
+    : 0;
+
+  const abortableSleep = (ms: number, signal: AbortSignal) =>
+    new Promise<void>((resolve, reject) => {
+      if (signal.aborted) {
+        reject(new DOMException('Aborted', 'AbortError'));
+        return;
+      }
+      const timer = setTimeout(() => {
+        signal.removeEventListener('abort', onAbort);
+        resolve();
+      }, ms);
+      const onAbort = () => {
+        clearTimeout(timer);
+        reject(new DOMException('Aborted', 'AbortError'));
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
+
+  const executeBatchPlan = async (
+    initialCheckpoint: ResumeCheckpoint,
+    seedQuestions: DppQuestion[],
+    controller: AbortController,
+  ) => {
+    const completedSet = new Set<number>(initialCheckpoint.completedBatchIndices);
+    const questionMap = new Map<number, DppQuestion>();
+    for (const q of seedQuestions) {
+      questionMap.set(q.number, q);
+    }
+
+    let resolvedTitle = initialCheckpoint.title;
+    let resolvedSubtitle = initialCheckpoint.subtitle;
+    const isSample = initialCheckpoint.metadata.paperType === 'sample_paper';
+
+    const pendingBatches = initialCheckpoint.batches.filter(
+      (b) => !completedSet.has(b.batchIndex),
+    );
+
+    if (pendingBatches.length === 0) {
+      setResumeCheckpoint(null);
+      setIsGenerating(false);
+      return;
+    }
+
+    if (seedQuestions.length > 0) {
+      setHasPartialBatch(true);
+      setDocMode('questions');
+    }
+
+    let nextQueueIdx = 0;
+    let rateLimitCooldownUntil = 0;
+    let firstFatalErr: string | null = null;
+    const CONCURRENCY = Math.min(2, pendingBatches.length);
+
+    const runSingleBatchRequest = async (batch: PlannedBatch) => {
+      const maxAttempts = 3;
+      let lastErrMsg = 'Batch request failed.';
+
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        if (controller.signal.aborted) {
+          throw new DOMException('Aborted', 'AbortError');
+        }
+
+        const waitMs = rateLimitCooldownUntil - Date.now();
+        if (waitMs > 0) {
+          setProgressMsg(
+            `Rate limit cooldown (${Math.ceil(waitMs / 1000)}s) before Q${batch.startNum}–Q${batch.startNum + batch.batchSize - 1}...`,
+          );
+          await abortableSleep(waitMs, controller.signal);
+        }
+
+        const subjPrefix = batch.subjectTag ? `${batch.subjectTag} · ` : '';
+        setProgressMsg(
+          attempt === 1
+            ? `${subjPrefix}Generating Batch ${batch.batchIndex + 1}/${initialCheckpoint.batches.length} (Q${batch.startNum}–Q${batch.startNum + batch.batchSize - 1})...`
+            : `${subjPrefix}Retrying Q${batch.startNum}–Q${batch.startNum + batch.batchSize - 1} (Attempt ${attempt}/${maxAttempts})...`,
+        );
+
+        const timeoutSignal = AbortSignal.timeout(70000);
+        const combinedSignal =
+          typeof AbortSignal.any === 'function'
+            ? AbortSignal.any([controller.signal, timeoutSignal])
+            : controller.signal;
+
+        try {
+          const res = await fetch('/api/dpp/generate-batch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              batch,
+              aiMode: initialCheckpoint.aiMode,
+              aiProvider: initialCheckpoint.aiProvider,
+            }),
+            signal: combinedSignal,
+          });
+
+          const text = await res.text();
+          let data: {
+            title?: string;
+            subtitle?: string;
+            questions?: DppQuestion[];
+            error?: string;
+          } = {};
+          try {
+            data = text ? JSON.parse(text) : {};
+          } catch {
+            data = {};
+          }
+
+          if (res.ok && Array.isArray(data.questions) && data.questions.length > 0) {
+            return data;
+          }
+
+          lastErrMsg = data.error || `Server status ${res.status}`;
+          const isAuth =
+            res.status === 403 ||
+            /API_KEY_INVALID|PERMISSION_DENIED|not configured/i.test(lastErrMsg);
+          if (isAuth) {
+            throw new Error(lastErrMsg);
+          }
+
+          const isRateLimit =
+            res.status === 429 || /rate limit|429|RESOURCE_EXHAUSTED/i.test(lastErrMsg);
+          const isTransient =
+            isRateLimit ||
+            res.status === 502 ||
+            res.status === 503 ||
+            res.status === 504 ||
+            /took too long|503|high demand|overloaded|TIMEOUT|Empty JSON/i.test(lastErrMsg);
+
+          if (attempt < maxAttempts && isTransient) {
+            if (isRateLimit) {
+              rateLimitCooldownUntil = Date.now() + 14000 * attempt;
+              await abortableSleep(14000 * attempt, controller.signal);
+            } else {
+              await abortableSleep(2500 * attempt, controller.signal);
+            }
+            continue;
+          }
+          throw new Error(lastErrMsg);
+        } catch (err) {
+          if (controller.signal.aborted) {
+            throw new DOMException('Aborted', 'AbortError');
+          }
+          const msg = err instanceof Error ? err.message : String(err);
+          const isTimedOut =
+            (err as { name?: string })?.name === 'TimeoutError' ||
+            /timed out|failed to fetch|network/i.test(msg);
+          if (attempt < maxAttempts && isTimedOut) {
+            lastErrMsg = 'Request timed out; retrying automatically...';
+            await abortableSleep(2500 * attempt, controller.signal);
+            continue;
+          }
+          throw err;
+        }
+      }
+      throw new Error(lastErrMsg);
+    };
+
+    const runWorker = async () => {
+      while (!controller.signal.aborted && !firstFatalErr) {
+        const idx = nextQueueIdx++;
+        if (idx >= pendingBatches.length) break;
+        const batch = pendingBatches[idx];
+
+        try {
+          const batchRes = await runSingleBatchRequest(batch);
+          if (controller.signal.aborted) break;
+
+          if (!isSample && batchRes.title && resolvedTitle === initialCheckpoint.title) {
+            resolvedTitle = batchRes.title;
+          }
+          if (!isSample && batchRes.subtitle && resolvedSubtitle === initialCheckpoint.subtitle) {
+            resolvedSubtitle = batchRes.subtitle;
+          }
+
+          for (let n = batch.startNum; n < batch.startNum + batch.batchSize; n++) {
+            questionMap.delete(n);
+          }
+          for (const q of batchRes.questions || []) {
+            questionMap.set(q.number, q);
+          }
+
+          completedSet.add(batch.batchIndex);
+          const mergedQuestions = Array.from(questionMap.values()).sort(
+            (a, b) => a.number - b.number,
+          );
+
+          const updatedDoc: DppDocument = {
+            title: resolvedTitle,
+            subtitle: resolvedSubtitle,
+            metadata: initialCheckpoint.metadata,
+            questions: mergedQuestions,
+            isStarterPreview: false,
+          };
+
+          setDpp(updatedDoc);
+          setHasPartialBatch(true);
+          setDocMode('questions');
+
+          const nextCheckpoint: ResumeCheckpoint = {
+            ...initialCheckpoint,
+            title: resolvedTitle,
+            subtitle: resolvedSubtitle,
+            completedBatchIndices: Array.from(completedSet),
+          };
+          setResumeCheckpoint(
+            completedSet.size >= initialCheckpoint.batches.length ? null : nextCheckpoint,
+          );
+        } catch (err) {
+          if (controller.signal.aborted || (err as { name?: string })?.name === 'AbortError') {
+            break;
+          }
+          firstFatalErr = err instanceof Error ? err.message : 'Batch generation paused.';
+          break;
+        }
+      }
+    };
+
+    try {
+      await Promise.all(Array.from({ length: CONCURRENCY }, () => runWorker()));
+      if (controller.signal.aborted) return;
+
+      const finalQuestions = Array.from(questionMap.values()).sort(
+        (a, b) => a.number - b.number,
+      );
+      const allCompleted = completedSet.size >= initialCheckpoint.batches.length;
+
+      if (allCompleted && finalQuestions.length > 0) {
+        const finalDoc: DppDocument = {
+          title: resolvedTitle,
+          subtitle: resolvedSubtitle,
+          metadata: initialCheckpoint.metadata,
+          questions: finalQuestions,
+          isStarterPreview: false,
+        };
+        setDpp(finalDoc);
+        setResumeCheckpoint(null);
+        setHistory((prev) => {
+          const docTag =
+            finalDoc.metadata.paperType === 'sample_paper'
+              ? 'Sample'
+              : finalDoc.metadata.paperType === 'test'
+                ? 'Test'
+                : 'DPP';
+          const entry: SavedDppEntry = {
+            id: `sheet-${Date.now()}`,
+            label: `[${docTag}] Class ${finalDoc.metadata.classLevel} ${finalDoc.metadata.subject} · ${finalDoc.metadata.topic} (${finalDoc.questions.length} Qs)`,
+            doc: finalDoc,
+          };
+          return [entry, ...prev].slice(0, 8);
+        });
+        setDocMode('questions');
+      } else if (firstFatalErr) {
+        setErrorMsg(
+          finalQuestions.length > 0
+            ? `${finalQuestions.length}/${initialCheckpoint.totalQuestions} Qs saved. ${firstFatalErr} Click "Continue Remaining" to resume from next batch.`
+            : firstFatalErr,
+        );
+      }
+    } finally {
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+      }
+      setIsGenerating(false);
+      setHasPartialBatch(false);
+      setProgressMsg('');
+    }
+  };
+
   const handleGenerate = async () => {
     abortControllerRef.current?.abort();
     const controller = new AbortController();
@@ -335,9 +675,7 @@ export default function App() {
     setErrorMsg(null);
     setIsGenerating(true);
     setHasPartialBatch(false);
-    setProgressMsg('Connecting to fast paper-setter...');
-
-    let latestPartial: DppDocument | null = null;
+    setProgressMsg('Preparing batch plan...');
 
     const activeSampleBp =
       form.paperType === 'sample_paper'
@@ -366,7 +704,7 @@ export default function App() {
             paperType: 'sample_paper',
             sampleExamId: activeSampleBp.id,
             sampleSyllabusScope: form.sampleSyllabusScope || 'full',
-            sampleDistributionMode: form.sampleDistributionMode || 'equal',
+            sampleDistributionMode: form.sampleDistributionMode || 'custom',
             sampleSelectedChapters: form.sampleSelectedChapters || [],
             questionCount: activeSampleStats.totalQuestions,
             classLevel: activeSampleBp.id === 'cbse_10_board' ? '10' : '12',
@@ -377,7 +715,7 @@ export default function App() {
                 : activeSampleBp.defaultBoardSubject,
             chapter:
               form.sampleSyllabusScope === 'selected' && (form.sampleSelectedChapters?.length || 0) > 0
-                ? `Selected Chapters (${form.sampleSelectedChapters!.length} · ${(form.sampleDistributionMode || 'equal') === 'custom' ? 'Custom Qs' : 'Equal Split'})`
+                ? `Selected Chapters (${form.sampleSelectedChapters!.length} · ${(form.sampleDistributionMode || 'custom') === 'custom' ? 'Custom Qs' : 'Equal Split'})`
                 : 'Full Official Syllabus (Equal Split)',
             topic: activeSampleBp.examHeaderTag,
           }
@@ -398,15 +736,12 @@ export default function App() {
           : { ...form, topicMode: 'single' };
 
     try {
-      let generated: DppDocument | null = null;
+      let plan: BatchGenerationPlan | null = null;
       for (let attempt = 0; attempt <= 2; attempt++) {
         if (controller.signal.aborted) return;
-        const res = await fetch('/api/dpp/generate', {
+        const res = await fetch('/api/dpp/plan-batches', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Accept: 'application/x-ndjson',
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(requestPayload),
           signal: controller.signal,
         });
@@ -414,7 +749,7 @@ export default function App() {
         if (!res.ok) {
           if ((res.status === 502 || res.status === 503 || res.status === 504) && attempt < 2) {
             setProgressMsg('Waking server & retrying automatically...');
-            await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+            await abortableSleep(1500 * (attempt + 1), controller.signal);
             continue;
           }
           const txt = await res.text();
@@ -427,69 +762,67 @@ export default function App() {
           throw new Error(errJson.error || `Server error (${res.status}). Please retry.`);
         }
 
-        const contentType = res.headers.get('content-type') || '';
-        if (!contentType.includes('ndjson') || !res.body) {
-          const json = await res.json();
-          generated = json as DppDocument;
-          break;
-        }
-
-        await readNdjsonStream(
-          res,
-          controller,
-          (evt) => {
-            if (evt.type === 'progress' && evt.message) {
-              setProgressMsg(evt.message);
-            } else if (evt.type === 'batch' && evt.data) {
-              latestPartial = evt.data;
-              setDpp(evt.data);
-              setHasPartialBatch(true);
-              setDocMode('questions');
-            } else if (evt.type === 'result' && evt.data) {
-              generated = evt.data;
-            } else if (evt.type === 'error') {
-              throw new Error(evt.error || 'Failed to generate DPP.');
-            }
-          },
-          form.paperType === 'sample_paper' ? 75000 : 45000,
-        );
+        plan = (await res.json()) as BatchGenerationPlan;
         break;
       }
 
       if (controller.signal.aborted) return;
-      const finalDoc = generated || latestPartial;
-      if (!finalDoc || !Array.isArray(finalDoc.questions) || finalDoc.questions.length === 0) {
-        throw new Error('No DPP payload received from server.');
+      if (!plan || !Array.isArray(plan.batches) || plan.batches.length === 0) {
+        throw new Error('Could not build batch plan.');
       }
-      setDpp(finalDoc);
-      setHistory((prev) => {
-        const docTag =
-          finalDoc.metadata.paperType === 'sample_paper'
-            ? 'Sample'
-            : finalDoc.metadata.paperType === 'test'
-              ? 'Test'
-              : 'DPP';
-        const entry: SavedDppEntry = {
-          id: `sheet-${Date.now()}`,
-          label: `[${docTag}] Class ${finalDoc.metadata.classLevel} ${finalDoc.metadata.subject} · ${finalDoc.metadata.topic} (${finalDoc.questions.length} Qs)`,
-          doc: finalDoc,
-        };
-        return [entry, ...prev].slice(0, 8);
+
+      const freshCheckpoint: ResumeCheckpoint = {
+        title: plan.title,
+        subtitle: plan.subtitle,
+        metadata: plan.metadata,
+        totalQuestions: plan.totalQuestions,
+        batches: plan.batches,
+        completedBatchIndices: [],
+        aiMode: form.aiMode,
+        aiProvider: form.aiProvider || 'auto',
+      };
+
+      setDpp({
+        title: plan.title,
+        subtitle: plan.subtitle,
+        metadata: plan.metadata,
+        questions: [],
+        isStarterPreview: false,
       });
-      setDocMode('questions');
+      setResumeCheckpoint(freshCheckpoint);
+
+      await executeBatchPlan(freshCheckpoint, [], controller);
     } catch (err: unknown) {
-      if ((err as { name?: string })?.name === 'AbortError' && !err?.toString().includes('stalled')) {
+      if ((err as { name?: string })?.name === 'AbortError') {
+        setIsGenerating(false);
+        setProgressMsg('');
         return;
       }
-      setErrorMsg(err instanceof Error ? err.message : 'Unable to generate DPP.');
-    } finally {
-      if (abortControllerRef.current === controller) {
-        abortControllerRef.current = null;
-      }
+      setErrorMsg(err instanceof Error ? err.message : 'Unable to start generation.');
       setIsGenerating(false);
       setHasPartialBatch(false);
       setProgressMsg('');
     }
+  };
+
+  const handleResumeGenerate = async () => {
+    if (!resumeCheckpoint || isGenerating) return;
+    abortControllerRef.current?.abort();
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    setErrorMsg(null);
+    setIsGenerating(true);
+    setHasPartialBatch(dpp.questions.length > 0);
+    setProgressMsg(`Resuming remaining ${remainingResumeQs} questions...`);
+
+    const syncedCheckpoint: ResumeCheckpoint = {
+      ...resumeCheckpoint,
+      aiMode: form.aiMode,
+      aiProvider: form.aiProvider || resumeCheckpoint.aiProvider || 'auto',
+    };
+    setResumeCheckpoint(syncedCheckpoint);
+    await executeBatchPlan(syncedCheckpoint, dpp.questions, controller);
   };
 
   const handleRefineDpp = async (overrideInstruction?: string) => {
@@ -761,6 +1094,8 @@ export default function App() {
           onStyleChange={setStyleConfig}
           onResetStyles={() => setStyleConfig(DEFAULT_STYLE_CONFIG)}
           onGenerate={handleGenerate}
+          onResumeGenerate={handleResumeGenerate}
+          remainingResumeQs={remainingResumeQs}
           onCancelGenerate={handleCancelGenerate}
           isGenerating={isGenerating}
           providers={providers}
@@ -930,48 +1265,95 @@ export default function App() {
             </button>
           </div>
 
-          {/* Error Banner */}
+          {/* Error / Pause-Resume Banner */}
           {errorMsg && (
-            <div className="no-print mx-4 mt-3 p-3 bg-red-50 border border-red-200 rounded-lg flex items-center gap-3 text-xs text-red-800">
+            <div className="no-print mx-4 mt-3 p-3 bg-red-50 border border-red-200 rounded-lg flex flex-wrap items-center gap-2.5 text-xs text-red-800">
               <AlertCircle className="w-4 h-4 shrink-0 text-red-600" />
-              <div className="flex-1 min-w-0">
-                <span className="font-semibold">Error: </span>
+              <div className="flex-1 min-w-[200px]">
+                <span className="font-semibold">Paused: </span>
                 <span>{errorMsg}</span>
               </div>
+              {remainingResumeQs > 0 && (
+                <button
+                  type="button"
+                  onClick={handleResumeGenerate}
+                  disabled={isGenerating}
+                  className="px-3 py-1 bg-emerald-700 text-white font-semibold rounded hover:bg-emerald-800 shrink-0 cursor-pointer"
+                >
+                  Continue Remaining (+{remainingResumeQs} Qs)
+                </button>
+              )}
               <button
                 type="button"
                 onClick={handleGenerate}
-                className="px-2.5 py-1 bg-red-700 text-white font-semibold rounded hover:bg-red-800 shrink-0"
+                disabled={isGenerating}
+                className="px-2.5 py-1 bg-red-700 text-white font-semibold rounded hover:bg-red-800 shrink-0 cursor-pointer"
               >
-                Retry
+                {remainingResumeQs > 0 ? 'Restart Fresh' : 'Retry'}
               </button>
               <button
                 type="button"
                 onClick={() => setErrorMsg(null)}
-                className="text-red-700 hover:underline font-medium shrink-0"
+                className="text-red-700 hover:underline font-medium shrink-0 cursor-pointer"
               >
                 Dismiss
               </button>
             </div>
           )}
 
+          {/* Resumable Checkpoint Banner (shown when paused or stopped with remaining batches) */}
+          {!isGenerating && !errorMsg && remainingResumeQs > 0 && resumeCheckpoint && (
+            <div className="no-print mx-4 mt-3 px-4 py-2.5 bg-amber-50 border border-amber-200 rounded-lg flex flex-wrap items-center justify-between gap-2.5 text-xs text-amber-950">
+              <span className="font-medium">
+                Saved Progress: <strong>{dpp.questions.length} / {resumeCheckpoint.totalQuestions} Qs</strong> generated ·{' '}
+                <strong>{remainingResumeQs} Qs remaining</strong>
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleResumeGenerate}
+                  className="px-3 py-1 bg-blue-700 hover:bg-blue-800 text-white font-semibold rounded cursor-pointer"
+                >
+                  Continue Remaining (+{remainingResumeQs} Qs)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setResumeCheckpoint(null)}
+                  className="px-2 py-1 text-amber-800 hover:underline font-medium cursor-pointer"
+                >
+                  Discard
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Live progressive generation bar when first batch is already on screen */}
           {isGenerating && hasPartialBatch && (() => {
             const targetTotal =
-              form.paperType === 'sample_paper'
+              resumeCheckpoint?.totalQuestions ??
+              (form.paperType === 'sample_paper'
                 ? getBlueprintStats(
                     getSamplePaperBlueprint(form.sampleExamId || 'neet_180'),
                     form.subject,
                   ).totalQuestions
-                : form.questionCount;
+                : form.questionCount);
             return (
               <div className="no-print mx-4 mt-3 px-4 py-2.5 bg-blue-50 border border-blue-200 rounded-lg flex items-center justify-between gap-3 text-xs text-blue-900">
                 <span className="font-medium">
                   {progressMsg || `Adding remaining questions (${dpp.questions.length}/${targetTotal} ready)...`}
                 </span>
-                <span className="font-mono tabular-nums font-semibold">
-                  {dpp.questions.length}/{targetTotal}
-                </span>
+                <div className="flex items-center gap-2.5 shrink-0">
+                  <span className="font-mono tabular-nums font-semibold">
+                    {dpp.questions.length}/{targetTotal}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleCancelGenerate}
+                    className="px-2 py-0.5 text-[11px] font-semibold text-red-700 bg-white border border-red-200 hover:bg-red-50 rounded cursor-pointer"
+                  >
+                    Pause
+                  </button>
+                </div>
               </div>
             );
           })()}

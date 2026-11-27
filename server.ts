@@ -12,6 +12,7 @@ import {
   getSubjectTotalQuota,
   type SamplePoolChapter,
 } from './src/data/samplePaperBlueprints.ts';
+import type { SamplePaperExamId } from './src/types/dpp.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -409,7 +410,7 @@ async function callGroqJson<T>(
         }).finally(() => {
           signal?.removeEventListener('abort', onOuterAbort);
         }),
-        24000,
+        30000,
         `groq:${model}`,
         signal,
       );
@@ -513,19 +514,19 @@ async function callAiWithRetry<T = any>(
       attempts.push({
         model: 'gemini-4-hydrogen',
         thinkingLevel: ThinkingLevel.MEDIUM,
-        timeoutMs: 18000,
+        timeoutMs: 24000,
       });
     }
 
     attempts.push({
       model: 'gemini-3.1-flash-lite',
       thinkingLevel: isDeep ? ThinkingLevel.HIGH : undefined,
-      timeoutMs: 32000,
+      timeoutMs: 48000,
     });
 
     // Only enqueue a second Gemini retry if we don't have Groq backup waiting
     if (!groqKey || providerPref === 'gemini') {
-      attempts.push({ model: 'gemini-3.1-flash-lite', timeoutMs: 32000 });
+      attempts.push({ model: 'gemini-3.1-flash-lite', timeoutMs: 48000 });
     }
 
     for (let i = 0; i < attempts.length; i++) {
@@ -1062,12 +1063,466 @@ app.get('/api/health', (_req, res) => {
   });
 });
 
-app.post('/api/dpp/generate', async (req, res) => {
-  const body = req.body;
+interface PlannedBatchTask {
+  batchIndex: number;
+  batchSize: number;
+  startNum: number;
+  marks: number;
+  negativeMarks: number;
+  allowedTypes: string[];
+  sectionLabel?: string;
+  subjectTag?: string;
+  prompt: string;
+}
+
+function validateGenerateBody(body: Record<string, unknown> | undefined) {
   const isSamplePaperReq = body?.paperType === 'sample_paper' && Boolean(body?.sampleExamId);
   const hasMixed =
     body?.topicMode === 'mixed' && Array.isArray(body?.mixedTopics) && body.mixedTopics.length > 0;
-  if (!body || (!isSamplePaperReq && (!body.subject || (!hasMixed && (!body.chapter || !body.topic))))) {
+  return Boolean(
+    body && (isSamplePaperReq || (body.subject && (hasMixed || (body.chapter && body.topic)))),
+  );
+}
+
+type GenerateRequestBody = Parameters<typeof buildPedagogicalPrompt>[0] & {
+  questionCount?: number;
+  marksPerQuestion?: number;
+  negativeMarks?: number;
+  aiMode?: 'deep' | 'fast';
+  aiProvider?: AiProviderPref;
+  sampleExamId?: SamplePaperExamId;
+  sampleSyllabusScope?: 'full' | 'selected';
+  sampleDistributionMode?: 'equal' | 'custom';
+  sampleSelectedChapters?: {
+    subject: string;
+    classLevel: string;
+    chapter: string;
+    questionCount?: number;
+  }[];
+};
+
+function buildGenerationPlan(body: GenerateRequestBody) {
+  const isSamplePaperReq = Boolean(body?.paperType === 'sample_paper' && body?.sampleExamId);
+  const isJunior = parseInt(String(body.classLevel), 10) <= 10;
+  const tasks: PlannedBatchTask[] = [];
+
+  let metaClassLevel = body.classLevel;
+  let metaBoardOrExam = isJunior ? body.juniorBoard : body.seniorExam;
+  let metaTierOrLevel = isJunior ? body.juniorTier : body.seniorExam;
+  let metaSubject = body.subject;
+  let metaChapter = body.chapter;
+  let metaTopic = body.topic;
+  let defaultTitle = `${body.subject} ${body.paperType === 'test' ? 'Test Question Paper' : 'DPP'} — ${body.topic}`;
+  let defaultSubtitle = `Class ${body.classLevel} · ${metaBoardOrExam}`;
+
+  const rawMixedTopics = Array.isArray(body.mixedTopics) ? body.mixedTopics : [];
+  const isMixedTopicMode = body.topicMode === 'mixed' && rawMixedTopics.length > 0;
+  const cleanedMix: { chapter: string; topic: string }[] = isMixedTopicMode
+    ? rawMixedTopics.filter(
+        (m: unknown): m is { chapter: string; topic: string } =>
+          Boolean(
+            m &&
+              typeof m === 'object' &&
+              typeof (m as { topic?: unknown }).topic === 'string' &&
+              String((m as { topic: string }).topic).trim(),
+          ),
+      )
+    : [];
+
+  if (isSamplePaperReq && body.sampleExamId) {
+    const bp = getSamplePaperBlueprint(body.sampleExamId);
+    const boardSubj = bp.isMultiSubject
+      ? bp.defaultBoardSubject
+      : bp.subjects.includes(body.subject)
+        ? body.subject
+        : bp.defaultBoardSubject;
+    const sections = bp.getSections(boardSubj);
+    const fullPool = getSamplePaperChaptersPool(bp.id, boardSubj);
+    const customSelected: {
+      subject: string;
+      classLevel: string;
+      chapter: string;
+      questionCount?: number;
+    }[] =
+      body.sampleSyllabusScope === 'selected' && Array.isArray(body.sampleSelectedChapters)
+        ? body.sampleSelectedChapters
+        : [];
+    const distMode = body.sampleDistributionMode === 'custom' ? 'custom' : 'equal';
+
+    metaClassLevel = bp.id === 'cbse_10_board' ? '10' : '12';
+    metaBoardOrExam = bp.boardOrExam;
+    metaTierOrLevel = bp.title;
+    metaSubject = bp.isMultiSubject ? bp.subjects.join(' · ') : boardSubj;
+    metaChapter =
+      customSelected.length > 0
+        ? `Selected Chapters (${customSelected.length} · ${distMode === 'custom' ? 'Custom Count' : 'Equal Split'})`
+        : 'Full Official Syllabus (Equal Split)';
+    metaTopic = bp.examHeaderTag;
+    defaultTitle = `${bp.title}${bp.isMultiSubject ? '' : ` — ${boardSubj}`}`;
+    defaultSubtitle = bp.examHeaderTag;
+
+    const subjectSlotQueues = new Map<string, SamplePoolChapter[]>();
+    const subjectSlotCursor = new Map<string, number>();
+
+    const uniqueSubjects = Array.from(new Set(sections.map((s) => s.subject)));
+    for (const subj of uniqueSubjects) {
+      const subjectQuota = getSubjectTotalQuota(sections, subj);
+      const subjectFullChapters = fullPool.filter((p) => p.subject === subj);
+      const pickedCustom = customSelected.filter((c) => c.subject === subj);
+
+      if (pickedCustom.length > 0) {
+        const resolvedChapters: SamplePoolChapter[] = pickedCustom.map((c) => {
+          const match = subjectFullChapters.find(
+            (f) => f.chapter === c.chapter && f.classLevel === c.classLevel,
+          );
+          return (
+            match || {
+              subject: c.subject,
+              classLevel: (c.classLevel as SamplePoolChapter['classLevel']) || '12',
+              chapter: c.chapter,
+              topics: [],
+            }
+          );
+        });
+
+        let counts: number[];
+        const rawCounts = pickedCustom.map((c) => Math.max(0, Math.round(Number(c.questionCount) || 0)));
+        const rawSum = rawCounts.reduce((a, b) => a + b, 0);
+
+        if (distMode === 'custom' && rawSum > 0) {
+          if (rawSum === subjectQuota) {
+            counts = rawCounts;
+          } else if (rawSum < subjectQuota) {
+            counts = [...rawCounts];
+            let rem = subjectQuota - rawSum;
+            let idx = 0;
+            while (rem > 0) {
+              counts[idx % counts.length] += 1;
+              rem -= 1;
+              idx += 1;
+            }
+          } else {
+            const exact = rawCounts.map((c) => (c * subjectQuota) / rawSum);
+            counts = exact.map((v) => Math.floor(v));
+            const rem = subjectQuota - counts.reduce((a, b) => a + b, 0);
+            const order = exact
+              .map((v, i) => ({ i, frac: v - Math.floor(v) }))
+              .sort((a, b) => b.frac - a.frac);
+            for (let k = 0; k < rem; k++) {
+              counts[order[k % order.length].i] += 1;
+            }
+          }
+        } else {
+          counts = computeEqualSubjectCounts(subjectQuota, resolvedChapters.length);
+        }
+
+        subjectSlotQueues.set(
+          subj,
+          buildBalancedChapterSlots(resolvedChapters, counts, subjectQuota),
+        );
+      } else {
+        const fallbackList =
+          subjectFullChapters.length > 0
+            ? subjectFullChapters
+            : [
+                {
+                  subject: subj,
+                  classLevel: (metaClassLevel as SamplePoolChapter['classLevel']) || '12',
+                  chapter: `${subj} Complete Syllabus`,
+                  topics: [],
+                },
+              ];
+        const eqCounts = computeEqualSubjectCounts(subjectQuota, fallbackList.length);
+        subjectSlotQueues.set(
+          subj,
+          buildBalancedChapterSlots(fallbackList, eqCounts, subjectQuota),
+        );
+      }
+      subjectSlotCursor.set(subj, 0);
+    }
+
+    // Keep each sample paper batch <= 5 questions (4 if heavy diagrams) for fast, timeout-free execution
+    const maxBatch = Number(body.diagramPercentage) >= 60 ? 4 : 5;
+    let runningNum = 1;
+
+    for (const section of sections) {
+      const queue = subjectSlotQueues.get(section.subject) || [];
+      let cursor = subjectSlotCursor.get(section.subject) || 0;
+      let secRemaining = section.count;
+
+      while (secRemaining > 0) {
+        const bSize = Math.min(secRemaining, maxBatch);
+        const slotChapters: SamplePoolChapter[] = [];
+        for (let qIdx = 0; qIdx < bSize; qIdx++) {
+          const picked = queue[(cursor + qIdx) % Math.max(1, queue.length)];
+          if (picked) slotChapters.push(picked);
+        }
+        cursor += bSize;
+
+        tasks.push({
+          batchIndex: tasks.length,
+          batchSize: bSize,
+          startNum: runningNum,
+          marks: section.marks,
+          negativeMarks: section.negativeMarks,
+          allowedTypes: section.questionTypes,
+          sectionLabel: section.label,
+          subjectTag: section.subject,
+          prompt: buildSamplePaperBatchPrompt({
+            blueprintTitle: bp.title,
+            examHeaderTag: bp.examHeaderTag,
+            boardOrExam: bp.boardOrExam,
+            sectionLabel: section.label,
+            subject: section.subject,
+            patternNote: section.patternNote,
+            marks: section.marks,
+            negativeMarks: section.negativeMarks,
+            questionTypes: section.questionTypes,
+            batchSize: bSize,
+            startNumber: runningNum,
+            slotChapters,
+            diagramPercentage: Number(body.diagramPercentage) || 30,
+            medium: body.medium || 'English',
+            referenceBooks: Array.isArray(body.referenceBooks) ? body.referenceBooks : [],
+            customInstructions: body.customInstructions,
+          }),
+        });
+
+        runningNum += bSize;
+        secRemaining -= bSize;
+      }
+      subjectSlotCursor.set(section.subject, cursor);
+    }
+  } else {
+    const totalRequested = Math.min(Math.max(Number(body.questionCount) || 5, 1), 30);
+    const marks = Number(body.marksPerQuestion) || 4;
+    const neg = Number(body.negativeMarks) || 0;
+    const allowedTypes =
+      Array.isArray(body.questionTypes) && body.questionTypes.length > 0
+        ? body.questionTypes
+        : ['mcq'];
+
+    const batchSizes: number[] = [];
+    let remaining = totalRequested;
+    const maxBatch = Number(body.diagramPercentage) >= 70 ? 4 : 5;
+    while (remaining > 0) {
+      const size = Math.min(remaining, maxBatch);
+      batchSizes.push(size);
+      remaining -= size;
+    }
+
+    const batchAngles = [
+      'Batch 1 ONLY: Focus on core definitions, basic facts/laws & direct foundational PYQ setups. Do NOT cover edge cases or comparative synthesis.',
+      'Batch 2 ONLY: Focus on cause-effect reasoning, consequences, multi-step numerical/analytical problems & conceptual traps. NEVER repeat basic introductory recall.',
+      'Batch 3 ONLY: Focus on graphical/diagrammatic interpretations, special boundary cases, comparative analysis & statement-based twists.',
+      'Batch 4 ONLY: Focus on non-standard parameters, mixed constraints, exceptions & tricky exam variations.',
+      'Batch 5 ONLY: Focus on high-yield reference-book / Exemplar rank-booster scenarios & critical evaluation.',
+      'Batch 6 ONLY: Final distinct sweep of unique numerical/analytical cases not covered in Batches 1–5.',
+    ];
+
+    let runningOffset = 1;
+    for (let bIdx = 0; bIdx < batchSizes.length; bIdx++) {
+      const batchSize = batchSizes[bIdx];
+      const startNum = runningOffset;
+      runningOffset += batchSize;
+      const angle = batchSizes.length > 1 ? batchAngles[bIdx % batchAngles.length] : undefined;
+
+      let batchTopics: { chapter: string; topic: string }[] | undefined;
+      if (cleanedMix.length > 0) {
+        const picked: { chapter: string; topic: string }[] = [];
+        for (let qOffset = 0; qOffset < batchSize; qOffset++) {
+          const globalQIdx = startNum - 1 + qOffset;
+          const item = cleanedMix[globalQIdx % cleanedMix.length];
+          if (!picked.some((p) => p.chapter === item.chapter && p.topic === item.topic)) {
+            picked.push(item);
+          }
+        }
+        batchTopics = picked;
+      }
+
+      tasks.push({
+        batchIndex: tasks.length,
+        batchSize,
+        startNum,
+        marks,
+        negativeMarks: neg,
+        allowedTypes,
+        prompt: buildPedagogicalPrompt(body, batchSize, startNum, angle, batchTopics),
+      });
+    }
+  }
+
+  const isTestPaper = body.paperType === 'test';
+  const totalQuestions = tasks.reduce((sum, t) => sum + t.batchSize, 0);
+  const metadata = {
+    classLevel: metaClassLevel,
+    boardOrExam: metaBoardOrExam,
+    tierOrLevel: metaTierOrLevel,
+    subject: metaSubject,
+    chapter: metaChapter,
+    topic: metaTopic,
+    referenceBooks: body.referenceBooks || [],
+    medium: body.medium || 'English',
+    paperType: isSamplePaperReq ? 'sample_paper' : isTestPaper ? 'test' : 'dpp',
+    topicMode: isMixedTopicMode ? 'mixed' : 'single',
+    ...(isMixedTopicMode ? { mixedTopics: cleanedMix } : {}),
+    ...(isSamplePaperReq
+      ? {
+          sampleExamId: body.sampleExamId,
+          sampleSyllabusScope: body.sampleSyllabusScope || 'full',
+          sampleDistributionMode: body.sampleDistributionMode === 'custom' ? 'custom' : 'equal',
+          sampleSelectedChapters: body.sampleSelectedChapters || [],
+        }
+      : {}),
+  };
+
+  return {
+    title: defaultTitle,
+    subtitle: defaultSubtitle,
+    metadata,
+    totalQuestions,
+    batches: tasks,
+    isSamplePaperReq,
+  };
+}
+
+async function executeSinglePlannedBatch(
+  ai: GoogleGenAI | null,
+  task: PlannedBatchTask,
+  options: {
+    aiMode: 'deep' | 'fast';
+    aiProvider: AiProviderPref;
+    signal: AbortSignal;
+    onProgress?: (msg: string) => void;
+  },
+) {
+  const runChunk = async (chunkPrompt: string, startNum: number, count: number) => {
+    const parsed = await callAiWithRetry<{
+      title?: string;
+      subtitle?: string;
+      questions?: Record<string, unknown>[];
+    }>(
+      ai,
+      chunkPrompt,
+      dppResponseSchema,
+      options.onProgress,
+      {
+        aiMode: options.aiMode,
+        aiProvider: options.aiProvider,
+        signal: options.signal,
+        validate: (data) => Array.isArray(data?.questions) && data.questions.length > 0,
+      },
+    );
+
+    const normalized = (parsed.questions || [])
+      .slice(0, count)
+      .map((q, i) => ({
+        ...normalizeQuestion(
+          q,
+          startNum + i,
+          task.marks,
+          task.negativeMarks,
+          task.allowedTypes,
+        ),
+        ...(task.sectionLabel ? { sectionLabel: task.sectionLabel } : {}),
+        ...(task.subjectTag ? { subjectTag: task.subjectTag } : {}),
+      }));
+
+    return {
+      title: parsed.title,
+      subtitle: parsed.subtitle,
+      questions: normalized,
+    };
+  };
+
+  try {
+    return await runChunk(task.prompt, task.startNum, task.batchSize);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const isTimeoutOrIncomplete = /TIMEOUT|Empty JSON|Incomplete question/i.test(msg);
+    if (task.batchSize >= 4 && isTimeoutOrIncomplete && !options.signal.aborted) {
+      // Self-heal slow batch by splitting into 2 tiny sub-chunks (e.g. 2 + 3 Qs)
+      const firstCount = Math.ceil(task.batchSize / 2);
+      const secondCount = task.batchSize - firstCount;
+      options.onProgress?.(`Splitting Q${task.startNum}–Q${task.startNum + task.batchSize - 1} into fast 2+3 micro-batches...`);
+
+      const p1 = `${task.prompt}\n\nSTRICT MICRO-BATCH OVERRIDE: Generate ONLY ${firstCount} questions numbered ${task.startNum} to ${task.startNum + firstCount - 1} from the syllabus/assignment above.`;
+      const p2 = `${task.prompt}\n\nSTRICT MICRO-BATCH OVERRIDE: Generate ONLY ${secondCount} questions numbered ${task.startNum + firstCount} to ${task.startNum + task.batchSize - 1} from the syllabus/assignment above.`;
+
+      const res1 = await runChunk(p1, task.startNum, firstCount);
+      const res2 = await runChunk(p2, task.startNum + firstCount, secondCount);
+      return {
+        title: res1.title || res2.title,
+        subtitle: res1.subtitle || res2.subtitle,
+        questions: [...res1.questions, ...res2.questions],
+      };
+    }
+    throw err;
+  }
+}
+
+app.post('/api/dpp/plan-batches', (req, res) => {
+  const body = req.body;
+  if (!validateGenerateBody(body)) {
+    return res.status(400).json({ error: 'Subject, chapter, and topic(s) are required.' });
+  }
+  const plan = buildGenerationPlan(body);
+  return res.json({
+    title: plan.title,
+    subtitle: plan.subtitle,
+    metadata: plan.metadata,
+    totalQuestions: plan.totalQuestions,
+    batches: plan.batches,
+  });
+});
+
+app.post('/api/dpp/generate-batch', async (req, res) => {
+  const { batch, aiMode, aiProvider } = req.body || {};
+  if (!batch || typeof batch.prompt !== 'string' || !batch.batchSize) {
+    return res.status(400).json({ error: 'Valid batch descriptor is required.' });
+  }
+
+  const controller = new AbortController();
+  res.on('close', () => {
+    if (!res.writableFinished && !res.writableEnded) {
+      controller.abort();
+    }
+  });
+
+  try {
+    const ai = getAiClient();
+    const result = await executeSinglePlannedBatch(ai, batch as PlannedBatchTask, {
+      aiMode: aiMode === 'deep' ? 'deep' : 'fast',
+      aiProvider: aiProvider === 'groq' || aiProvider === 'gemini' ? aiProvider : 'auto',
+      signal: controller.signal,
+    });
+
+    if (!result.questions.length) {
+      throw new Error('No questions returned by AI provider for this batch.');
+    }
+
+    return res.json({
+      batchIndex: batch.batchIndex,
+      title: result.title,
+      subtitle: result.subtitle,
+      questions: result.questions,
+    });
+  } catch (err: unknown) {
+    if (controller.signal.aborted || (err instanceof Error && err.message === 'ABORTED')) {
+      return;
+    }
+    console.error('Error generating batch:', err);
+    const cleanMsg = extractCleanErrorMessage(err);
+    const isAuthErr = /API_KEY_INVALID|PERMISSION_DENIED|No AI API key|GROQ_API_KEY is not configured/i.test(
+      err instanceof Error ? err.message : '',
+    );
+    return res.status(isAuthErr ? 403 : 500).json({ error: cleanMsg });
+  }
+});
+
+app.post('/api/dpp/generate', async (req, res) => {
+  const body = req.body;
+  if (!validateGenerateBody(body)) {
     return res.status(400).json({ error: 'Subject, chapter, and topic(s) are required.' });
   }
 
@@ -1104,267 +1559,13 @@ app.post('/api/dpp/generate', async (req, res) => {
 
   try {
     const ai = getAiClient();
-    const isJunior = parseInt(body.classLevel, 10) <= 10;
     const aiMode = body.aiMode === 'deep' ? 'deep' : 'fast';
     const aiProvider: AiProviderPref =
       body.aiProvider === 'groq' || body.aiProvider === 'gemini' ? body.aiProvider : 'auto';
 
-    interface BatchTask {
-      batchSize: number;
-      startNum: number;
-      marks: number;
-      negativeMarks: number;
-      allowedTypes: string[];
-      sectionLabel?: string;
-      subjectTag?: string;
-      prompt: string;
-    }
-
-    const tasks: BatchTask[] = [];
-    let metaClassLevel = body.classLevel;
-    let metaBoardOrExam = isJunior ? body.juniorBoard : body.seniorExam;
-    let metaTierOrLevel = isJunior ? body.juniorTier : body.seniorExam;
-    let metaSubject = body.subject;
-    let metaChapter = body.chapter;
-    let metaTopic = body.topic;
-    let defaultTitle = `${body.subject} ${body.paperType === 'test' ? 'Test Question Paper' : 'DPP'} — ${body.topic}`;
-    let defaultSubtitle = `Class ${body.classLevel} · ${metaBoardOrExam}`;
-
-    const isMixedTopicMode =
-      body.topicMode === 'mixed' && Array.isArray(body.mixedTopics) && body.mixedTopics.length > 0;
-    const cleanedMix: { chapter: string; topic: string }[] = isMixedTopicMode
-      ? body.mixedTopics.filter(
-          (m: unknown): m is { chapter: string; topic: string } =>
-            Boolean(
-              m &&
-                typeof m === 'object' &&
-                typeof (m as { topic?: unknown }).topic === 'string' &&
-                String((m as { topic: string }).topic).trim(),
-            ),
-        )
-      : [];
-
-    if (isSamplePaperReq) {
-      const bp = getSamplePaperBlueprint(body.sampleExamId);
-      const boardSubj = bp.isMultiSubject
-        ? bp.defaultBoardSubject
-        : bp.subjects.includes(body.subject)
-          ? body.subject
-          : bp.defaultBoardSubject;
-      const sections = bp.getSections(boardSubj);
-      const fullPool = getSamplePaperChaptersPool(bp.id, boardSubj);
-      const customSelected: {
-        subject: string;
-        classLevel: string;
-        chapter: string;
-        questionCount?: number;
-      }[] =
-        body.sampleSyllabusScope === 'selected' && Array.isArray(body.sampleSelectedChapters)
-          ? body.sampleSelectedChapters
-          : [];
-      const distMode = body.sampleDistributionMode === 'custom' ? 'custom' : 'equal';
-
-      metaClassLevel = bp.id === 'cbse_10_board' ? '10' : '12';
-      metaBoardOrExam = bp.boardOrExam;
-      metaTierOrLevel = bp.title;
-      metaSubject = bp.isMultiSubject ? bp.subjects.join(' · ') : boardSubj;
-      metaChapter =
-        customSelected.length > 0
-          ? `Selected Chapters (${customSelected.length} · ${distMode === 'custom' ? 'Custom Count' : 'Equal Split'})`
-          : 'Full Official Syllabus (Equal Split)';
-      metaTopic = bp.examHeaderTag;
-      defaultTitle = `${bp.title}${bp.isMultiSubject ? '' : ` — ${boardSubj}`}`;
-      defaultSubtitle = bp.examHeaderTag;
-
-      // Build exact per-subject question slot queue matching subject's official total quota
-      const subjectSlotQueues = new Map<string, SamplePoolChapter[]>();
-      const subjectSlotCursor = new Map<string, number>();
-
-      const uniqueSubjects = Array.from(new Set(sections.map((s) => s.subject)));
-      for (const subj of uniqueSubjects) {
-        const subjectQuota = getSubjectTotalQuota(sections, subj);
-        const subjectFullChapters = fullPool.filter((p) => p.subject === subj);
-        const pickedCustom = customSelected.filter((c) => c.subject === subj);
-
-        if (pickedCustom.length > 0) {
-          const resolvedChapters: SamplePoolChapter[] = pickedCustom.map((c) => {
-            const match = subjectFullChapters.find(
-              (f) => f.chapter === c.chapter && f.classLevel === c.classLevel,
-            );
-            return (
-              match || {
-                subject: c.subject,
-                classLevel: (c.classLevel as SamplePoolChapter['classLevel']) || '12',
-                chapter: c.chapter,
-                topics: [],
-              }
-            );
-          });
-
-          let counts: number[];
-          const rawCounts = pickedCustom.map((c) => Math.max(0, Math.round(Number(c.questionCount) || 0)));
-          const rawSum = rawCounts.reduce((a, b) => a + b, 0);
-
-          if (distMode === 'custom' && rawSum > 0) {
-            if (rawSum === subjectQuota) {
-              counts = rawCounts;
-            } else if (rawSum < subjectQuota) {
-              counts = [...rawCounts];
-              let rem = subjectQuota - rawSum;
-              let idx = 0;
-              while (rem > 0) {
-                counts[idx % counts.length] += 1;
-                rem -= 1;
-                idx += 1;
-              }
-            } else {
-              // Scale down proportionally via largest remainder so sum === subjectQuota
-              const exact = rawCounts.map((c) => (c * subjectQuota) / rawSum);
-              counts = exact.map((v) => Math.floor(v));
-              let rem = subjectQuota - counts.reduce((a, b) => a + b, 0);
-              const order = exact
-                .map((v, i) => ({ i, frac: v - Math.floor(v) }))
-                .sort((a, b) => b.frac - a.frac);
-              for (let k = 0; k < rem; k++) {
-                counts[order[k % order.length].i] += 1;
-              }
-            }
-          } else {
-            counts = computeEqualSubjectCounts(subjectQuota, resolvedChapters.length);
-          }
-
-          subjectSlotQueues.set(
-            subj,
-            buildBalancedChapterSlots(resolvedChapters, counts, subjectQuota),
-          );
-        } else {
-          const fallbackList =
-            subjectFullChapters.length > 0
-              ? subjectFullChapters
-              : [
-                  {
-                    subject: subj,
-                    classLevel: (metaClassLevel as SamplePoolChapter['classLevel']) || '12',
-                    chapter: `${subj} Complete Syllabus`,
-                    topics: [],
-                  },
-                ];
-          const eqCounts = computeEqualSubjectCounts(subjectQuota, fallbackList.length);
-          subjectSlotQueues.set(
-            subj,
-            buildBalancedChapterSlots(fallbackList, eqCounts, subjectQuota),
-          );
-        }
-        subjectSlotCursor.set(subj, 0);
-      }
-
-      const maxBatch = Number(body.diagramPercentage) >= 70 ? 4 : 6;
-      let runningNum = 1;
-
-      for (const section of sections) {
-        const queue = subjectSlotQueues.get(section.subject) || [];
-        let cursor = subjectSlotCursor.get(section.subject) || 0;
-        let secRemaining = section.count;
-
-        while (secRemaining > 0) {
-          const bSize = Math.min(secRemaining, maxBatch);
-          const slotChapters: SamplePoolChapter[] = [];
-          for (let qIdx = 0; qIdx < bSize; qIdx++) {
-            const picked = queue[(cursor + qIdx) % Math.max(1, queue.length)];
-            if (picked) slotChapters.push(picked);
-          }
-          cursor += bSize;
-
-          tasks.push({
-            batchSize: bSize,
-            startNum: runningNum,
-            marks: section.marks,
-            negativeMarks: section.negativeMarks,
-            allowedTypes: section.questionTypes,
-            sectionLabel: section.label,
-            subjectTag: section.subject,
-            prompt: buildSamplePaperBatchPrompt({
-              blueprintTitle: bp.title,
-              examHeaderTag: bp.examHeaderTag,
-              boardOrExam: bp.boardOrExam,
-              sectionLabel: section.label,
-              subject: section.subject,
-              patternNote: section.patternNote,
-              marks: section.marks,
-              negativeMarks: section.negativeMarks,
-              questionTypes: section.questionTypes,
-              batchSize: bSize,
-              startNumber: runningNum,
-              slotChapters,
-              diagramPercentage: Number(body.diagramPercentage) || 30,
-              medium: body.medium || 'English',
-              referenceBooks: Array.isArray(body.referenceBooks) ? body.referenceBooks : [],
-              customInstructions: body.customInstructions,
-            }),
-          });
-
-          runningNum += bSize;
-          secRemaining -= bSize;
-        }
-        subjectSlotCursor.set(section.subject, cursor);
-      }
-    } else {
-      const totalRequested = Math.min(Math.max(Number(body.questionCount) || 5, 1), 30);
-      const marks = Number(body.marksPerQuestion) || 4;
-      const neg = Number(body.negativeMarks) || 0;
-      const allowedTypes =
-        Array.isArray(body.questionTypes) && body.questionTypes.length > 0
-          ? body.questionTypes
-          : ['mcq'];
-
-      const batchSizes: number[] = [];
-      let remaining = totalRequested;
-      const maxBatch = Number(body.diagramPercentage) >= 70 ? 4 : 5;
-      while (remaining > 0) {
-        const size = Math.min(remaining, maxBatch);
-        batchSizes.push(size);
-        remaining -= size;
-      }
-
-      const batchAngles = [
-        'Batch 1 ONLY: Focus on core definitions, basic facts/laws & direct foundational PYQ setups. Do NOT cover edge cases or comparative synthesis.',
-        'Batch 2 ONLY: Focus on cause-effect reasoning, consequences, multi-step numerical/analytical problems & conceptual traps. NEVER repeat basic introductory recall.',
-        'Batch 3 ONLY: Focus on graphical/diagrammatic interpretations, special boundary cases, comparative analysis & statement-based twists.',
-        'Batch 4 ONLY: Focus on non-standard parameters, mixed constraints, exceptions & tricky exam variations.',
-        'Batch 5 ONLY: Focus on high-yield reference-book / Exemplar rank-booster scenarios & critical evaluation.',
-        'Batch 6 ONLY: Final distinct sweep of unique numerical/analytical cases not covered in Batches 1–5.',
-      ];
-
-      let runningOffset = 1;
-      for (let bIdx = 0; bIdx < batchSizes.length; bIdx++) {
-        const batchSize = batchSizes[bIdx];
-        const startNum = runningOffset;
-        runningOffset += batchSize;
-        const angle = batchSizes.length > 1 ? batchAngles[bIdx % batchAngles.length] : undefined;
-
-        let batchTopics: { chapter: string; topic: string }[] | undefined;
-        if (cleanedMix.length > 0) {
-          const picked: { chapter: string; topic: string }[] = [];
-          for (let qOffset = 0; qOffset < batchSize; qOffset++) {
-            const globalQIdx = startNum - 1 + qOffset;
-            const item = cleanedMix[globalQIdx % cleanedMix.length];
-            if (!picked.some((p) => p.chapter === item.chapter && p.topic === item.topic)) {
-              picked.push(item);
-            }
-          }
-          batchTopics = picked;
-        }
-
-        tasks.push({
-          batchSize,
-          startNum,
-          marks,
-          negativeMarks: neg,
-          allowedTypes,
-          prompt: buildPedagogicalPrompt(body, batchSize, startNum, angle, batchTopics),
-        });
-      }
-    }
+    const plan = buildGenerationPlan(body);
+    const tasks = plan.batches;
+    const isSamplePaperReq = plan.isSamplePaperReq;
 
     const batchResults: (Record<string, unknown>[] | null)[] = new Array(tasks.length).fill(null);
     let sheetTitle = '';
@@ -1383,36 +1584,14 @@ app.post('/api/dpp/generate', async (req, res) => {
       return collected;
     };
 
-    const isTestPaper = body.paperType === 'test';
-
     const buildPayload = () => ({
-      title: sheetTitle || defaultTitle,
-      subtitle: sheetSubtitle || defaultSubtitle,
-      metadata: {
-        classLevel: metaClassLevel,
-        boardOrExam: metaBoardOrExam,
-        tierOrLevel: metaTierOrLevel,
-        subject: metaSubject,
-        chapter: metaChapter,
-        topic: metaTopic,
-        referenceBooks: body.referenceBooks || [],
-        medium: body.medium || 'English',
-        paperType: isSamplePaperReq ? 'sample_paper' : isTestPaper ? 'test' : 'dpp',
-        topicMode: isMixedTopicMode ? 'mixed' : 'single',
-        ...(isMixedTopicMode ? { mixedTopics: cleanedMix } : {}),
-        ...(isSamplePaperReq
-          ? {
-              sampleExamId: body.sampleExamId,
-              sampleSyllabusScope: body.sampleSyllabusScope || 'full',
-              sampleDistributionMode: body.sampleDistributionMode === 'custom' ? 'custom' : 'equal',
-              sampleSelectedChapters: body.sampleSelectedChapters || [],
-            }
-          : {}),
-      },
+      title: sheetTitle || plan.title,
+      subtitle: sheetSubtitle || plan.subtitle,
+      metadata: plan.metadata,
       questions: collectOrderedQuestions(),
     });
 
-    const CONCURRENCY = isSamplePaperReq ? Math.min(3, tasks.length) : Math.min(2, tasks.length);
+    const CONCURRENCY = Math.min(2, tasks.length);
     let nextBatchIdx = 0;
 
     const runWorker = async () => {
@@ -1426,15 +1605,11 @@ app.post('/api/dpp/generate', async (req, res) => {
             ? `${task.subjectTag ? `${task.subjectTag} · ` : ''}Batch ${bIdx + 1}/${tasks.length} (Q${task.startNum}–Q${task.startNum + task.batchSize - 1})`
             : undefined;
 
-        const parsed = await callAiWithRetry<{
-          title?: string;
-          subtitle?: string;
-          questions?: Record<string, unknown>[];
-        }>(
-          ai,
-          task.prompt,
-          dppResponseSchema,
-          (msg) => {
+        const batchRes = await executeSinglePlannedBatch(ai, task, {
+          aiMode,
+          aiProvider,
+          signal: controller.signal,
+          onProgress: (msg) => {
             if (wantsStream && !res.writableEnded && !clientAborted) {
               res.write(
                 JSON.stringify({
@@ -1444,34 +1619,14 @@ app.post('/api/dpp/generate', async (req, res) => {
               );
             }
           },
-          {
-            aiMode,
-            aiProvider,
-            signal: controller.signal,
-            validate: (data) => Array.isArray(data?.questions) && data.questions.length > 0,
-          },
-        );
+        });
 
         if (clientAborted) break;
 
-        if (!sheetTitle && parsed.title && !isSamplePaperReq) sheetTitle = parsed.title;
-        if (!sheetSubtitle && parsed.subtitle && !isSamplePaperReq) sheetSubtitle = parsed.subtitle;
+        if (!sheetTitle && batchRes.title && !isSamplePaperReq) sheetTitle = batchRes.title;
+        if (!sheetSubtitle && batchRes.subtitle && !isSamplePaperReq) sheetSubtitle = batchRes.subtitle;
 
-        const normalizedBatch = (parsed.questions || [])
-          .slice(0, task.batchSize)
-          .map((q, i) => ({
-            ...normalizeQuestion(
-              q,
-              task.startNum + i,
-              task.marks,
-              task.negativeMarks,
-              task.allowedTypes,
-            ),
-            ...(task.sectionLabel ? { sectionLabel: task.sectionLabel } : {}),
-            ...(task.subjectTag ? { subjectTag: task.subjectTag } : {}),
-          }));
-
-        batchResults[bIdx] = normalizedBatch;
+        batchResults[bIdx] = batchRes.questions;
         completedBatches++;
 
         const shouldEmitPartial =

@@ -299,3 +299,24 @@ export interface GenerateDppPayload {
   sampleDistributionMode?: SampleDistributionMode;
   sampleSelectedChapters?: SampleChapterSelection[];
 }
+
+export interface PlannedBatch {
+  batchIndex: number;
+  batchSize: number;
+  startNum: number;
+  marks: number;
+  negativeMarks: number;
+  allowedTypes: string[];
+  sectionLabel?: string;
+  subjectTag?: string;
+  prompt: string;
+}
+
+export interface BatchGenerationPlan {
+  title: string;
+  subtitle: string;
+  metadata: DppMetadata;
+  totalQuestions: number;
+  batches: PlannedBatch[];
+}
+
