@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { Download, FileText, KeyRound, Printer, ZoomIn, ZoomOut, AlertCircle, Sparkles } from 'lucide-react';
-import { DEFAULT_STYLE_CONFIG, getChaptersForSelection, getRecommendedBooks } from './data/curriculum';
+import { Download, FileText, KeyRound, Printer, ZoomIn, ZoomOut, AlertCircle, Sparkles, Minimize2 } from 'lucide-react';
+import { DEFAULT_STYLE_CONFIG, applyMinimumPagePreset, getChaptersForSelection, getRecommendedBooks } from './data/curriculum';
 import { getBlueprintStats, getSamplePaperBlueprint } from './data/samplePaperBlueprints';
 import { STARTER_DPP } from './data/starterDpp';
 import {
@@ -20,6 +20,7 @@ import { OfflineIndicator, PWAInstallButton } from './components/PWAInstallButto
 import { exportDppToPdf } from './utils/pdfExporter';
 
 const STYLE_STORAGE_KEY = 'safal_dpp_style_v1';
+const PRE_COMPACT_STYLE_STORAGE_KEY = 'safal_pre_compact_style_v1';
 const ACTIVE_DPP_STORAGE_KEY = 'safal_active_dpp_v1';
 const HISTORY_DPP_STORAGE_KEY = 'safal_history_dpp_v1';
 const RESUME_CHECKPOINT_STORAGE_KEY = 'safal_resume_checkpoint_v1';
@@ -131,6 +132,42 @@ export default function App() {
       // Ignore storage error
     }
   }, [styleConfig]);
+
+  const [preCompactStyle, setPreCompactStyle] = useState<DppStyleConfig | null>(() => {
+    try {
+      const saved = localStorage.getItem(PRE_COMPACT_STYLE_STORAGE_KEY);
+      if (saved) {
+        return mergeStyleConfig(JSON.parse(saved) as Partial<DppStyleConfig>);
+      }
+    } catch {
+      // Ignore storage error
+    }
+    return null;
+  });
+
+  const handleToggleMinimumPageMode = () => {
+    if (!styleConfig.compactPrintMode) {
+      const snapshot = { ...styleConfig, compactPrintMode: false };
+      setPreCompactStyle(snapshot);
+      try {
+        localStorage.setItem(PRE_COMPACT_STYLE_STORAGE_KEY, JSON.stringify(snapshot));
+      } catch {
+        // Ignore storage error
+      }
+      setStyleConfig((prev) => applyMinimumPagePreset(prev));
+    } else {
+      const restored = preCompactStyle
+        ? { ...preCompactStyle, compactPrintMode: false }
+        : { ...DEFAULT_STYLE_CONFIG, compactPrintMode: false };
+      setStyleConfig(restored);
+      setPreCompactStyle(null);
+      try {
+        localStorage.removeItem(PRE_COMPACT_STYLE_STORAGE_KEY);
+      } catch {
+        // Ignore storage error
+      }
+    }
+  };
 
   const initialChapters = getChaptersForSelection('12', 'Physics', 'JEE Advanced');
 
@@ -1091,7 +1128,16 @@ export default function App() {
           onFormChange={setForm}
           styleConfig={styleConfig}
           onStyleChange={setStyleConfig}
-          onResetStyles={() => setStyleConfig(DEFAULT_STYLE_CONFIG)}
+          onToggleMinimumPageMode={handleToggleMinimumPageMode}
+          onResetStyles={() => {
+            setPreCompactStyle(null);
+            try {
+              localStorage.removeItem(PRE_COMPACT_STYLE_STORAGE_KEY);
+            } catch {
+              // Ignore storage error
+            }
+            setStyleConfig(DEFAULT_STYLE_CONFIG);
+          }}
           onGenerate={handleGenerate}
           onResumeGenerate={handleResumeGenerate}
           remainingResumeQs={remainingResumeQs}
@@ -1193,6 +1239,19 @@ export default function App() {
               </div>
 
               <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={handleToggleMinimumPageMode}
+                  title="One-click Minimum Page Mode: 2 columns, compact inline questions, white paper & minimal margins for cheapest printing"
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-md border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                    styleConfig.compactPrintMode
+                      ? 'bg-emerald-700 hover:bg-emerald-800 text-white border-emerald-700'
+                      : 'bg-white hover:bg-emerald-50 text-emerald-800 border-emerald-300'
+                  }`}
+                >
+                  <Minimize2 className="w-3.5 h-3.5" />
+                  <span>{styleConfig.compactPrintMode ? 'Min Pages: ON' : 'Min Pages Mode'}</span>
+                </button>
                 <button
                   type="button"
                   disabled={isExporting !== null}

@@ -233,7 +233,7 @@ export async function exportDppToPdf({
 
   const marginXMm = marginMm;
   const marginTopMm = marginMm;
-  const marginBottomMm = marginMm === 0 ? 0 : Math.max(marginMm, 4);
+  const marginBottomMm = marginMm === 0 ? 0 : Math.max(marginMm, styleConfig.compactPrintMode ? 3.5 : 4);
   const usableWidthMm = Math.max(50, pageWidthMm - marginXMm * 2);
   const usableHeightMm = Math.max(50, pageHeightMm - marginTopMm - marginBottomMm);
   const [pr, pg, pb] = hexToRgb(styleConfig.pageColor || '#FFFFFF');
@@ -291,11 +291,16 @@ export async function exportDppToPdf({
     }
 
     if (styleConfig.columns === 2) {
-      clonedEl.querySelectorAll('.print\\:columns-2').forEach((el) => {
-        const colEl = el as HTMLElement;
-        colEl.style.columnCount = '2';
-        colEl.style.columnGap = '20px';
-        colEl.style.columnRule = '1px solid rgba(148, 163, 184, 0.35)';
+      clonedEl.querySelectorAll('.print\\:grid-cols-2').forEach((el) => {
+        const gridEl = el as HTMLElement;
+        gridEl.style.display = 'grid';
+        gridEl.style.gridTemplateColumns = 'repeat(2, minmax(0, 1fr))';
+        gridEl.style.alignItems = 'start';
+        gridEl.style.columnGap = styleConfig.compactPrintMode ? '14px' : '22px';
+        gridEl.style.rowGap = '0px';
+      });
+      clonedEl.querySelectorAll('.print\\:col-span-2').forEach((el) => {
+        (el as HTMLElement).style.gridColumn = '1 / -1';
       });
     }
 
@@ -305,8 +310,8 @@ export async function exportDppToPdf({
         optEl.style.display = 'flex';
         optEl.style.flexWrap = 'wrap';
         optEl.style.justifyContent = 'space-between';
-        optEl.style.columnGap = '14px';
-        optEl.style.rowGap = '6px';
+        optEl.style.columnGap = styleConfig.compactPrintMode ? '10px' : '14px';
+        optEl.style.rowGap = styleConfig.compactPrintMode ? '2px' : '6px';
       });
     }
 
@@ -334,16 +339,21 @@ export async function exportDppToPdf({
     });
 
     void clonedEl.offsetHeight;
+    const rawTops: number[] = [];
+    const cloneRect = clonedEl.getBoundingClientRect();
+    clonedEl.querySelectorAll('.question-block-avoid-break').forEach((el) => {
+      const r = el.getBoundingClientRect();
+      const topPx = r.top - cloneRect.top;
+      if (topPx > 20) {
+        rawTops.push(topPx);
+      }
+    });
+    rawTops.sort((a, b) => a - b);
     const questionTopsCss: number[] = [];
-    if (styleConfig.columns === 1) {
-      const cloneRect = clonedEl.getBoundingClientRect();
-      clonedEl.querySelectorAll('.question-block-avoid-break').forEach((el) => {
-        const r = el.getBoundingClientRect();
-        const topPx = r.top - cloneRect.top;
-        if (topPx > 20) {
-          questionTopsCss.push(topPx);
-        }
-      });
+    for (const t of rawTops) {
+      if (questionTopsCss.length === 0 || t - questionTopsCss[questionTopsCss.length - 1] > 4) {
+        questionTopsCss.push(t);
+      }
     }
     return {
       fullHeightCss: Math.max(800, clonedEl.scrollHeight || estimatedHeightPx),
@@ -372,7 +382,7 @@ export async function exportDppToPdf({
 
       let chosenEndY = idealEndY;
 
-      if (styleConfig.columns === 1 && localQuestionTopsCss.length > 0) {
+      if (localQuestionTopsCss.length > 0) {
         const candidateTops = localQuestionTopsCss
           .map((t) => Math.floor(t * captureScale))
           .filter((t) => t > currentY + maxSliceHeightPx * 0.42 && t <= idealEndY);

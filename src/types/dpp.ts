@@ -235,7 +235,8 @@ export interface DppStyleConfig {
   watermarkOpacity: number; // 4 to 20 (%)
   questionSpacing: number; // 8 to 28 (px)
 
-  // Page-Saver & Compact Layout Controls (6 Sliders)
+  // Page-Saver & Compact Layout Controls (6 Sliders + One-Click Minimum Page Mode)
+  compactPrintMode?: boolean;
   mcqOptionsLayout: number; // 0 = Auto, 1 = 2/Row, 2 = All 4 in 1 Line
   letterSpacing: number; // -1.0 to 0.5 px
   wordSpacing: number; // -3.5 to 2.0 px

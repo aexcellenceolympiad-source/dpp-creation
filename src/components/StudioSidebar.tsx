@@ -1,13 +1,15 @@
 import React from 'react';
-import { Play, RotateCcw, Sparkles, X } from 'lucide-react';
+import { Minimize2, Play, RotateCcw, Sparkles, X } from 'lucide-react';
 import {
   CLASS_LEVELS,
+  DEFAULT_STYLE_CONFIG,
   JUNIOR_BOARDS,
   JUNIOR_SUBJECTS,
   JUNIOR_TIERS,
   QUESTION_TYPE_OPTIONS,
   SENIOR_EXAMS,
   SENIOR_SUBJECTS,
+  applyMinimumPagePreset,
   getChaptersForSelection,
   getRecommendedBooks,
 } from '../data/curriculum';
@@ -50,6 +52,7 @@ interface StudioSidebarProps {
   onFormChange: (updater: (prev: GenerateDppPayload) => GenerateDppPayload) => void;
   styleConfig: DppStyleConfig;
   onStyleChange: (updater: (prev: DppStyleConfig) => DppStyleConfig) => void;
+  onToggleMinimumPageMode?: () => void;
   onResetStyles: () => void;
   onGenerate: () => void;
   onResumeGenerate?: () => void;
@@ -180,6 +183,7 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
   onFormChange,
   styleConfig,
   onStyleChange,
+  onToggleMinimumPageMode,
   onResetStyles,
   onGenerate,
   onResumeGenerate,
@@ -2014,6 +2018,38 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
               />
             </div>
 
+            {/* One-Click Minimum Page Mode (Economical Printing) */}
+            <div className="pt-2 border-t border-slate-200 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="text-xs font-bold text-slate-900">
+                    Minimum Page Mode (Cheap Print)
+                  </div>
+                  <p className="text-[11px] text-slate-500 leading-snug">
+                    1-click 2 columns, inline Q-numbers, compact 10.5pt font, white paper, 2mm margins & 5-col answer grid.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (onToggleMinimumPageMode) {
+                      onToggleMinimumPageMode();
+                    } else {
+                      onStyleChange((prev) => applyMinimumPagePreset(prev));
+                    }
+                  }}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                    styleConfig.compactPrintMode
+                      ? 'bg-emerald-700 hover:bg-emerald-800 text-white border-emerald-700'
+                      : 'bg-slate-900 hover:bg-slate-800 text-white border-slate-900'
+                  }`}
+                >
+                  <Minimize2 className="w-3.5 h-3.5" />
+                  <span>{styleConfig.compactPrintMode ? 'Enabled (Turn Off)' : 'Enable 1-Click'}</span>
+                </button>
+              </div>
+            </div>
+
             {/* Paper Orientation & Columns */}
             <div className="pt-2 border-t border-slate-200 space-y-3">
               <div>
@@ -2287,27 +2323,19 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
                 <div className="flex items-center gap-1">
                   <button
                     type="button"
-                    onClick={() =>
-                      onStyleChange((prev) => ({
-                        ...prev,
-                        mcqOptionsLayout: 2,
-                        letterSpacing: -0.45,
-                        wordSpacing: -1.5,
-                        lineHeight: 1.12,
-                        paragraphSpacing: 3,
-                        questionSpacing: 3,
-                        pageMarginMm: 0,
-                      }))
-                    }
+                    onClick={() => onStyleChange((prev) => applyMinimumPagePreset(prev))}
                     className="px-2 py-0.5 text-[10.5px] font-semibold bg-emerald-600 hover:bg-emerald-700 text-white rounded transition-colors cursor-pointer"
                   >
-                    Max Save
+                    Min Pages
                   </button>
                   <button
                     type="button"
                     onClick={() =>
                       onStyleChange((prev) => ({
                         ...prev,
+                        compactPrintMode: false,
+                        columns: 1,
+                        borderStyle: DEFAULT_STYLE_CONFIG.borderStyle,
                         mcqOptionsLayout: 0,
                         letterSpacing: 0,
                         wordSpacing: 0,
@@ -2315,6 +2343,11 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
                         paragraphSpacing: 12,
                         questionSpacing: 14,
                         pageMarginMm: 6,
+                        figureScale: 100,
+                        showPyqTags: true,
+                        questionStyle: { ...prev.questionStyle, fontSize: DEFAULT_STYLE_CONFIG.questionStyle.fontSize },
+                        optionStyle: { ...prev.optionStyle, fontSize: DEFAULT_STYLE_CONFIG.optionStyle.fontSize },
+                        solutionStyle: { ...prev.solutionStyle, fontSize: DEFAULT_STYLE_CONFIG.solutionStyle.fontSize },
                       }))
                     }
                     className="px-2 py-0.5 text-[10.5px] font-medium bg-slate-100 hover:bg-slate-200 text-slate-700 rounded transition-colors cursor-pointer"

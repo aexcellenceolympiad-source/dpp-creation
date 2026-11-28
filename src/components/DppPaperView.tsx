@@ -88,6 +88,7 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
     : styleConfig.questionSpacing ?? 12;
   const marginMm = Number.isFinite(styleConfig.pageMarginMm) ? styleConfig.pageMarginMm : 6;
   const mcqLayout = Number.isFinite(styleConfig.mcqOptionsLayout) ? styleConfig.mcqOptionsLayout : 0;
+  const isCompact = Boolean(styleConfig.compactPrintMode);
 
   const startEdit = (q: DppQuestion) => {
     setEditingId(q.id);
@@ -267,32 +268,37 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                   <header
                     className="text-center"
                     style={{
-                      borderBottom: `1.5px solid ${styleConfig.borderColor}`,
-                      paddingBottom: `${Math.max(4, Math.round(paraGapPx * 0.75))}px`,
-                      marginBottom: `${Math.max(4, paraGapPx)}px`,
+                      borderBottom: `${isCompact ? '1px' : '1.5px'} solid ${styleConfig.borderColor}`,
+                      paddingBottom: `${isCompact ? 4 : Math.max(4, Math.round(paraGapPx * 0.75))}px`,
+                      marginBottom: `${isCompact ? 4 : Math.max(4, paraGapPx)}px`,
                     }}
                   >
                     <div className="tracking-wide leading-tight" style={toTextCss(styleConfig.brandStyle)}>
                       {styleConfig.brandName || 'SAFAL ACADEMY LIVE'}
                     </div>
                     {styleConfig.brandSubtitle && (
-                      <div className="mt-0.5 leading-snug" style={toTextCss(styleConfig.subtitleStyle)}>
+                      <div
+                        className={`${isCompact ? 'mt-0' : 'mt-0.5'} leading-snug`}
+                        style={toTextCss(styleConfig.subtitleStyle)}
+                      >
                         {styleConfig.brandSubtitle}
                       </div>
                     )}
 
                     <div
-                      className="mt-2.5 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-xs font-medium"
+                      className={`${isCompact ? 'mt-1 gap-x-2 gap-y-0.5' : 'mt-2.5 gap-x-3 gap-y-1'} flex flex-wrap items-center justify-center text-xs font-medium`}
                       style={toTextCss(styleConfig.headerMetaStyle)}
                     >
                       <span>
                         {mode === 'questions'
                           ? isSamplePaper
-                            ? 'OFFICIAL PATTERN SAMPLE QUESTION PAPER'
+                            ? isCompact
+                              ? 'SAMPLE QUESTION PAPER'
+                              : 'OFFICIAL PATTERN SAMPLE QUESTION PAPER'
                             : isTestPaper
                               ? 'TEST QUESTION PAPER'
                               : 'DAILY PRACTICE PROBLEM (DPP)'
-                          : 'ANSWER KEY & STEP-BY-STEP SOLUTIONS'}
+                          : 'ANSWER KEY & SOLUTIONS'}
                       </span>
                       <span aria-hidden="true">·</span>
                       <span>
@@ -309,7 +315,7 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                     </div>
 
                     <div
-                      className="mt-1.5"
+                      className={isCompact ? 'mt-0.5' : 'mt-1.5'}
                       style={toTextCss(styleConfig.chapterLineStyle, {
                         ...styleConfig.headerMetaStyle,
                         fontSize: 12,
@@ -323,7 +329,7 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
 
                     {styleConfig.showHeaderMeta && (
                       <div
-                        className="mt-2.5 pt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] tabular-nums border-t"
+                        className={`${isCompact ? 'mt-1 pt-1 gap-1.5 text-[9.5px]' : 'mt-2.5 pt-2 gap-2 text-[11px]'} flex flex-wrap items-center justify-between tabular-nums border-t`}
                         style={{
                           borderColor: `${styleConfig.borderColor}30`,
                           ...toTextCss(styleConfig.headerMetaStyle),
@@ -331,14 +337,14 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                       >
                         <span>Batch: {styleConfig.batchName}</span>
                         <span>Code: {styleConfig.testCode}</span>
-                        <span>Questions: {dpp.questions.length}</span>
+                        <span>Qs: {dpp.questions.length}</span>
                         <span>Max Marks: {totalMarks}</span>
                         <span>Time: {styleConfig.duration}</span>
                         <span>Date: {styleConfig.dateText}</span>
                       </div>
                     )}
 
-                    {(isTestPaper || isSamplePaper) && mode === 'questions' && (
+                    {(isTestPaper || isSamplePaper) && mode === 'questions' && !isCompact && (
                       <div
                         className="mt-2 text-[10.5px] italic opacity-85"
                         style={{ color: styleConfig.headerMetaStyle.color }}
@@ -353,7 +359,9 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                     <div
                       className={
                         styleConfig.columns === 2
-                          ? 'columns-1 md:columns-2 print:columns-2 gap-6 [column-rule:1px_solid_rgba(148,163,184,0.35)]'
+                          ? `grid grid-cols-1 md:grid-cols-2 print:grid-cols-2 items-start ${
+                              isCompact ? 'gap-x-3.5 gap-y-0' : 'gap-x-6 gap-y-0'
+                            }`
                           : ''
                       }
                     >
@@ -369,11 +377,12 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                           <React.Fragment key={q.id}>
                             {showSectionHeader && (
                               <div
-                                className="break-after-avoid px-2.5 py-1.5 rounded-sm border-l-4 font-bold uppercase tracking-wide text-[11.5px]"
+                                className={`break-after-avoid rounded-sm border-l-4 font-bold uppercase tracking-wide ${
+                                  styleConfig.columns === 2 ? 'md:col-span-2 print:col-span-2' : ''
+                                } ${isCompact ? 'px-2 py-0.5 text-[9.5px]' : 'px-2.5 py-1.5 text-[11.5px]'}`}
                                 style={{
-                                  columnSpan: styleConfig.columns === 2 ? 'all' : undefined,
-                                  marginTop: qIdx === 0 ? 0 : `${Math.max(6, paraGapPx)}px`,
-                                  marginBottom: `${Math.max(4, Math.round(paraGapPx * 0.75))}px`,
+                                  marginTop: qIdx === 0 ? 0 : `${isCompact ? 3 : Math.max(6, paraGapPx)}px`,
+                                  marginBottom: `${isCompact ? 2 : Math.max(4, Math.round(paraGapPx * 0.75))}px`,
                                   backgroundColor: `${styleConfig.borderColor}10`,
                                   borderColor: styleConfig.brandStyle.color,
                                   color: styleConfig.brandStyle.color,
@@ -386,7 +395,7 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                               className="question-block-avoid-break group relative break-inside-avoid min-w-0 max-w-full border-b border-slate-200/70 last:border-b-0"
                               style={{
                                 marginBottom: `${paraGapPx}px`,
-                                paddingBottom: `${Math.max(2, Math.round(paraGapPx * 0.55))}px`,
+                                paddingBottom: `${isCompact ? Math.max(1, Math.round(paraGapPx * 0.4)) : Math.max(2, Math.round(paraGapPx * 0.55))}px`,
                               }}
                             >
                             {/* Inline Teacher Controls (hidden on PDF print) */}
@@ -422,45 +431,47 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                               </button>
                             </div>
 
-                            {/* Question Meta Header Line */}
-                            <div className="flex flex-wrap items-baseline justify-between gap-2 mb-1">
-                              <div className="flex items-baseline gap-2">
-                                <span
-                                  className="font-bold tabular-nums"
-                                  style={{ color: stemStyle.color, fontSize: stemStyle.fontSize }}
-                                >
-                                  Q{q.number}.
-                                </span>
-                                <span
-                                  className="uppercase tracking-wider"
-                                  style={toTextCss(styleConfig.metaTagStyle, {
-                                    color: '#64748B',
-                                    fontSize: 10.5,
-                                    bold: true,
-                                    italic: false,
-                                    underline: false,
-                                  })}
-                                >
-                                  {getTypeLabel(q.type)}
-                                  {styleConfig.showPyqTags && q.pyqTag ? ` · ${q.pyqTag}` : ''}
-                                </span>
+                            {/* Question Meta Header Line (hidden in compact Minimum Page Mode when inline Q-number saves a full row per question) */}
+                            {(!isCompact || editingId === q.id) && (
+                              <div className="flex flex-wrap items-baseline justify-between gap-2 mb-1">
+                                <div className="flex items-baseline gap-2">
+                                  <span
+                                    className="font-bold tabular-nums"
+                                    style={{ color: stemStyle.color, fontSize: stemStyle.fontSize }}
+                                  >
+                                    Q{q.number}.
+                                  </span>
+                                  <span
+                                    className="uppercase tracking-wider"
+                                    style={toTextCss(styleConfig.metaTagStyle, {
+                                      color: '#64748B',
+                                      fontSize: 10.5,
+                                      bold: true,
+                                      italic: false,
+                                      underline: false,
+                                    })}
+                                  >
+                                    {getTypeLabel(q.type)}
+                                    {styleConfig.showPyqTags && q.pyqTag ? ` · ${q.pyqTag}` : ''}
+                                  </span>
+                                </div>
+                                {styleConfig.showMarksPerQuestion && (
+                                  <span
+                                    className="font-mono tabular-nums"
+                                    style={toTextCss(styleConfig.metaTagStyle, {
+                                      color: '#475569',
+                                      fontSize: 11,
+                                      bold: false,
+                                      italic: false,
+                                      underline: false,
+                                    })}
+                                  >
+                                    [+{q.marks}
+                                    {q.negativeMarks > 0 ? ` / -${q.negativeMarks}` : ''}]
+                                  </span>
+                                )}
                               </div>
-                              {styleConfig.showMarksPerQuestion && (
-                                <span
-                                  className="font-mono tabular-nums"
-                                  style={toTextCss(styleConfig.metaTagStyle, {
-                                    color: '#475569',
-                                    fontSize: 11,
-                                    bold: false,
-                                    italic: false,
-                                    underline: false,
-                                  })}
-                                >
-                                  [+{q.marks}
-                                  {q.negativeMarks > 0 ? ` / -${q.negativeMarks}` : ''}]
-                                </span>
-                              )}
-                            </div>
+                            )}
 
                             {/* Editing Mode */}
                             {editingId === q.id ? (
@@ -557,7 +568,32 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                               </div>
                             ) : (
                               <div style={{ ...stemStyle, lineHeight: lineHeightVal }}>
+                                {isCompact && (
+                                  <span className="font-bold tabular-nums mr-1">
+                                    Q{q.number}.
+                                  </span>
+                                )}
+                                {isCompact && q.type !== 'mcq' && (
+                                  <span
+                                    className="uppercase mr-1 opacity-75"
+                                    style={{
+                                      fontSize: `${Math.max(7.5, styleConfig.metaTagStyle.fontSize)}px`,
+                                      fontWeight: 600,
+                                    }}
+                                  >
+                                    [{getTypeLabel(q.type)}]
+                                  </span>
+                                )}
                                 <MathText text={q.stem} />
+                                {isCompact && styleConfig.showMarksPerQuestion && (
+                                  <span
+                                    className="font-mono tabular-nums ml-1 whitespace-nowrap opacity-75"
+                                    style={{ fontSize: `${Math.max(7.5, styleConfig.metaTagStyle.fontSize)}px` }}
+                                  >
+                                    [+{q.marks}
+                                    {q.negativeMarks > 0 ? `/-${q.negativeMarks}` : ''}]
+                                  </span>
+                                )}
                               </div>
                             )}
 
@@ -621,18 +657,18 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
 
                             {/* Match the Following Table */}
                             {q.type === 'match_following' && q.matchColumns && (
-                              <div className="mt-2.5 overflow-x-auto">
+                              <div className={`${isCompact ? 'mt-1' : 'mt-2.5'} overflow-x-auto`}>
                                 <table className="w-full border-collapse text-left border border-slate-300/80">
                                   <thead>
                                     <tr className="border-b border-slate-300/80 bg-black/[0.025]">
                                       <th
-                                        className="py-1.5 px-2.5 border-r border-slate-300/80 w-1/2"
+                                        className={`${isCompact ? 'py-0.5 px-1.5' : 'py-1.5 px-2.5'} border-r border-slate-300/80 w-1/2`}
                                         style={toTextCss(styleConfig.matchLeftStyle)}
                                       >
                                         {q.matchColumns.leftHeader || 'Column I'}
                                       </th>
                                       <th
-                                        className="py-1.5 px-2.5 w-1/2"
+                                        className={`${isCompact ? 'py-0.5 px-1.5' : 'py-1.5 px-2.5'} w-1/2`}
                                         style={toTextCss(styleConfig.matchRightStyle)}
                                       >
                                         {q.matchColumns.rightHeader || 'Column II'}
@@ -654,7 +690,7 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                                           className="border-b border-slate-200/70 last:border-b-0"
                                         >
                                           <td
-                                            className="py-1.5 px-2.5 border-r border-slate-300/80 align-top"
+                                            className={`${isCompact ? 'py-0.5 px-1.5' : 'py-1.5 px-2.5'} border-r border-slate-300/80 align-top`}
                                             style={toTextCss(styleConfig.matchLeftStyle)}
                                           >
                                             {left ? (
@@ -664,7 +700,7 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                                             ) : null}
                                           </td>
                                           <td
-                                            className="py-1.5 px-2.5 align-top"
+                                            className={`${isCompact ? 'py-0.5 px-1.5' : 'py-1.5 px-2.5'} align-top`}
                                             style={toTextCss(styleConfig.matchRightStyle)}
                                           >
                                             {right ? (
@@ -702,9 +738,11 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                                 );
                                 const layoutClass =
                                   mcqLayout === 2
-                                    ? 'mcq-options-flex-4 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1.5'
+                                    ? `mcq-options-flex-4 flex flex-wrap items-baseline justify-between ${
+                                        isCompact ? 'gap-x-2.5 gap-y-0.5' : 'gap-x-4 gap-y-1.5'
+                                      }`
                                     : mcqLayout === 1
-                                      ? 'grid grid-cols-2 gap-x-4 gap-y-1.5'
+                                      ? `grid grid-cols-2 ${isCompact ? 'gap-x-2.5 gap-y-0.5' : 'gap-x-4 gap-y-1.5'}`
                                       : hasDiagramOpt || maxVisualLen > 46
                                         ? hasDiagramOpt
                                           ? 'grid grid-cols-2 sm:grid-cols-4 gap-x-3 gap-y-2'
@@ -721,7 +759,7 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                                     {q.options.map((opt) => (
                                       <div
                                         key={opt.label}
-                                        className={`flex items-baseline gap-1.5 min-w-0 ${
+                                        className={`flex items-baseline ${isCompact ? 'gap-1' : 'gap-1.5'} min-w-0 ${
                                           mcqLayout === 2 ? 'shrink-0 max-w-full' : ''
                                         }`}
                                         style={{
@@ -737,8 +775,8 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                                               smiles={opt.smiles}
                                               color={styleConfig.figureColor}
                                               strokeWidth={styleConfig.figureStrokeWidth}
-                                              maxWidth={130}
-                                              maxHeight={90}
+                                              maxWidth={isCompact ? 95 : 130}
+                                              maxHeight={isCompact ? 68 : 90}
                                             />
                                           )}
                                         </div>
@@ -749,7 +787,7 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                               })()}
 
                             {/* Subjective writing note */}
-                            {isSubjective && (
+                            {isSubjective && !isCompact && (
                               <div className="mt-2 pt-1 text-[10.5px] italic text-slate-400">
                                 [Show complete step-by-step derivation / reasoning]
                               </div>
@@ -763,56 +801,75 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
 
                   {/* ANSWER KEY & SOLUTIONS SEPARATE PDF MODE */}
                   {mode === 'answers' && (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: `${Math.max(6, paraGapPx)}px` }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: `${isCompact ? 4 : Math.max(6, paraGapPx)}px` }}>
                       <section>
                         <h2
-                          className="text-sm font-bold uppercase tracking-wider mb-2"
+                          className={`${isCompact ? 'text-[11px] mb-1' : 'text-sm mb-2'} font-bold uppercase tracking-wider`}
                           style={{ color: styleConfig.brandStyle.color }}
                         >
                           Quick Answer Key Grid
                         </h2>
-                        <div className="overflow-x-auto">
-                          <table className="w-full border-collapse border border-slate-300 text-xs tabular-nums">
-                            <thead>
-                              <tr className="bg-black/[0.04] border-b border-slate-300">
-                                <th className="py-1.5 px-2.5 text-left border-r border-slate-300 font-semibold">
-                                  Q. No
-                                </th>
-                                <th className="py-1.5 px-2.5 text-left border-r border-slate-300 font-semibold">
-                                  Type
-                                </th>
-                                <th className="py-1.5 px-2.5 text-left border-r border-slate-300 font-semibold">
-                                  Correct Answer
-                                </th>
-                                <th className="py-1.5 px-2.5 text-right font-semibold">Marks</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {questions.map((q) => (
-                                <tr key={q.id} className="border-b border-slate-200/80 last:border-b-0">
-                                  <td className="py-1.5 px-2.5 border-r border-slate-300 font-semibold">
-                                    Q{q.number}
-                                  </td>
-                                  <td className="py-1.5 px-2.5 border-r border-slate-300 text-slate-600">
-                                    {getTypeLabel(q.type)}
-                                  </td>
-                                  <td
-                                    className="py-1.5 px-2.5 border-r border-slate-300 font-semibold"
-                                    style={{ color: styleConfig.matchRightStyle.color }}
-                                  >
-                                    <MathText text={q.correctAnswer} />
-                                  </td>
-                                  <td className="py-1.5 px-2.5 text-right">+{q.marks}</td>
+                        {isCompact ? (
+                          <div className="grid grid-cols-5 border-t border-l border-slate-300 text-[9.5px] tabular-nums">
+                            {questions.map((q) => (
+                              <div
+                                key={q.id}
+                                className="py-0.5 px-1.5 border-r border-b border-slate-300 flex items-baseline justify-between gap-1 min-w-0"
+                              >
+                                <span className="font-bold text-slate-700 shrink-0">Q{q.number}</span>
+                                <span
+                                  className="font-semibold break-words text-right leading-tight"
+                                  style={{ color: styleConfig.matchRightStyle.color }}
+                                >
+                                  <MathText text={q.correctAnswer} />
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="overflow-x-auto">
+                            <table className="w-full border-collapse border border-slate-300 text-xs tabular-nums">
+                              <thead>
+                                <tr className="bg-black/[0.04] border-b border-slate-300">
+                                  <th className="py-1.5 px-2.5 text-left border-r border-slate-300 font-semibold">
+                                    Q. No
+                                  </th>
+                                  <th className="py-1.5 px-2.5 text-left border-r border-slate-300 font-semibold">
+                                    Type
+                                  </th>
+                                  <th className="py-1.5 px-2.5 text-left border-r border-slate-300 font-semibold">
+                                    Correct Answer
+                                  </th>
+                                  <th className="py-1.5 px-2.5 text-right font-semibold">Marks</th>
                                 </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
+                              </thead>
+                              <tbody>
+                                {questions.map((q) => (
+                                  <tr key={q.id} className="border-b border-slate-200/80 last:border-b-0">
+                                    <td className="py-1.5 px-2.5 border-r border-slate-300 font-semibold">
+                                      Q{q.number}
+                                    </td>
+                                    <td className="py-1.5 px-2.5 border-r border-slate-300 text-slate-600">
+                                      {getTypeLabel(q.type)}
+                                    </td>
+                                    <td
+                                      className="py-1.5 px-2.5 border-r border-slate-300 font-semibold"
+                                      style={{ color: styleConfig.matchRightStyle.color }}
+                                    >
+                                      <MathText text={q.correctAnswer} />
+                                    </td>
+                                    <td className="py-1.5 px-2.5 text-right">+{q.marks}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
                       </section>
 
                       <section>
                         <h2
-                          className="text-sm font-bold uppercase tracking-wider mb-3 pb-1 border-b"
+                          className={`${isCompact ? 'text-[11px] mb-1.5 pb-0.5' : 'text-sm mb-3 pb-1'} font-bold uppercase tracking-wider border-b`}
                           style={{
                             color: styleConfig.brandStyle.color,
                             borderColor: `${styleConfig.borderColor}40`,
@@ -824,8 +881,12 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                         <div
                           className={
                             styleConfig.columns === 2
-                              ? 'columns-1 md:columns-2 print:columns-2 gap-6 [column-rule:1px_solid_rgba(148,163,184,0.35)]'
-                              : 'space-y-4'
+                              ? `grid grid-cols-1 md:grid-cols-2 print:grid-cols-2 items-start ${
+                                  isCompact ? 'gap-x-3.5 gap-y-0' : 'gap-x-6 gap-y-0'
+                                }`
+                              : isCompact
+                                ? 'space-y-1.5'
+                                : 'space-y-4'
                           }
                         >
                           {questions.map((q, qIdx) => {
@@ -835,11 +896,12 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                               <React.Fragment key={q.id}>
                                 {showSectionHeader && (
                                   <div
-                                    className="break-after-avoid px-2.5 py-1 rounded-sm border-l-4 font-bold uppercase tracking-wide text-[11px]"
+                                    className={`break-after-avoid rounded-sm border-l-4 font-bold uppercase tracking-wide ${
+                                      styleConfig.columns === 2 ? 'md:col-span-2 print:col-span-2' : ''
+                                    } ${isCompact ? 'px-2 py-0.5 text-[9.5px]' : 'px-2.5 py-1 text-[11px]'}`}
                                     style={{
-                                      columnSpan: styleConfig.columns === 2 ? 'all' : undefined,
-                                      marginTop: qIdx === 0 ? 0 : `${Math.max(6, paraGapPx)}px`,
-                                      marginBottom: `${Math.max(4, Math.round(paraGapPx * 0.75))}px`,
+                                      marginTop: qIdx === 0 ? 0 : `${isCompact ? 3 : Math.max(6, paraGapPx)}px`,
+                                      marginBottom: `${isCompact ? 2 : Math.max(4, Math.round(paraGapPx * 0.75))}px`,
                                       backgroundColor: `${styleConfig.borderColor}10`,
                                       borderColor: styleConfig.brandStyle.color,
                                       color: styleConfig.brandStyle.color,
@@ -849,25 +911,27 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                                   </div>
                                 )}
                                 <article
-                                  className="question-block-avoid-break break-inside-avoid border-b border-slate-200/70 last:border-b-0"
+                                  className="question-block-avoid-break break-inside-avoid border-b border-slate-200/70 last:border-b-0 min-w-0 max-w-full"
                                   style={{
                                     marginBottom: `${paraGapPx}px`,
-                                    paddingBottom: `${Math.max(2, Math.round(paraGapPx * 0.55))}px`,
+                                    paddingBottom: `${isCompact ? Math.max(1, Math.round(paraGapPx * 0.4)) : Math.max(2, Math.round(paraGapPx * 0.55))}px`,
                                   }}
                                 >
-                              <div className="flex flex-wrap items-baseline justify-between gap-2 mb-1">
+                              <div className={`flex flex-wrap items-baseline justify-between gap-2 ${isCompact ? 'mb-0.5' : 'mb-1'}`}>
                                 <span
                                   className="font-bold tabular-nums"
                                   style={toTextCss(styleConfig.questionStyle)}
                                 >
                                   Sol {q.number}.{' '}
                                   <span style={{ color: styleConfig.matchRightStyle.color }}>
-                                    Answer: <MathText text={q.correctAnswer} />
+                                    Ans: <MathText text={q.correctAnswer} />
                                   </span>
                                 </span>
-                                <span className="text-[10.5px] text-slate-500">
-                                  {getTypeLabel(q.type)}
-                                </span>
+                                {!isCompact && (
+                                  <span className="text-[10.5px] text-slate-500">
+                                    {getTypeLabel(q.type)}
+                                  </span>
+                                )}
                               </div>
 
                               {q.solutionDiagram && q.solutionDiagram.kind !== 'none' && (
@@ -880,11 +944,11 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                               )}
 
                               <ol
-                                className="list-decimal pl-5 mt-1"
+                                className={`list-decimal ${isCompact ? 'pl-4 mt-0.5' : 'pl-5 mt-1'}`}
                                 style={{
                                   ...toTextCss(styleConfig.solutionStyle, {
                                     color: styleConfig.optionStyle.color,
-                                    fontSize: Math.max(11.5, styleConfig.questionStyle.fontSize - 0.5),
+                                    fontSize: Math.max(9.5, styleConfig.questionStyle.fontSize - 0.5),
                                     bold: false,
                                     italic: false,
                                     underline: false,
@@ -892,7 +956,7 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
                                   lineHeight: lineHeightVal,
                                   display: 'flex',
                                   flexDirection: 'column',
-                                  gap: `${Math.max(1, Math.round(paraGapPx * 0.25))}px`,
+                                  gap: `${isCompact ? 1 : Math.max(1, Math.round(paraGapPx * 0.25))}px`,
                                 }}
                               >
                                 {(Array.isArray(q.solutionSteps) ? q.solutionSteps : []).map((step, sIdx) => (
@@ -921,12 +985,12 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
 
           {/* Footer */}
           <footer
-            className="print-sheet-footer pt-2 flex items-center justify-between border-t"
+            className={`print-sheet-footer ${isCompact ? 'pt-1' : 'pt-2'} flex items-center justify-between border-t`}
             style={{
-              marginTop: `${Math.max(4, paraGapPx)}px`,
+              marginTop: `${isCompact ? 3 : Math.max(4, paraGapPx)}px`,
               paddingLeft: `${marginMm}mm`,
               paddingRight: `${marginMm}mm`,
-              paddingBottom: `${Math.max(2, Math.round(marginMm * 0.5))}mm`,
+              paddingBottom: `${isCompact ? 1 : Math.max(2, Math.round(marginMm * 0.5))}mm`,
               borderColor: `${styleConfig.borderColor}40`,
               ...toTextCss(styleConfig.footerStyle, {
                 color: styleConfig.headerMetaStyle.color,
@@ -941,11 +1005,11 @@ export const DppPaperView: React.FC<DppPaperViewProps> = ({
             <span className="tabular-nums">
               {mode === 'questions'
                 ? isSamplePaper
-                  ? 'Official Sample Paper'
+                  ? 'Sample Paper'
                   : isTestPaper
-                    ? 'Test Question Paper'
-                    : 'DPP Question Sheet'
-                : 'Answer Key & Solutions'}{' '}
+                    ? 'Test Paper'
+                    : 'DPP Sheet'
+                : 'Answer Key'}{' '}
               · {styleConfig.brandName}
             </span>
           </footer>
